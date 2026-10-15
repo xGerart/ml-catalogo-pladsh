@@ -6,6 +6,7 @@ from openpyxl import load_workbook
 
 from catalogo.labeling import (
     build_labeled_dataset,
+    check_review_matches_sample,
     read_review_workbook,
     write_review_workbook,
 )
@@ -72,3 +73,28 @@ def test_build_falla_si_otros_queda_con_menos_de_13():
     finals = ["Capilar"] * 40 + [OTROS] * 3
     with pytest.raises(ValueError, match="Otros"):
         build_labeled_dataset(_review(finals), CATS)
+
+
+def test_workbook_escribe_nombres_con_prefijo_de_formula_como_texto(tmp_path: Path):
+    df = pd.DataFrame({"id": [1], "nombre": ["=SUMA(A1)"], "propuesta": ["Uñas"]})
+    path = tmp_path / "r.xlsx"
+    write_review_workbook(df, CATS, path)
+    cell = load_workbook(path).active["B2"]
+    assert cell.data_type == "s"
+    assert read_review_workbook(path)["nombre"].tolist() == ["=SUMA(A1)"]
+
+
+def test_check_review_matches_sample_detecta_nombre_editado():
+    muestra = pd.DataFrame({"id": [1, 2], "nombre": ["ESMALTE", "GEL"]})
+    review = pd.DataFrame(
+        {"id": [1, 2], "nombre": ["ESMALTE", "GEL EDITADO"], "propuesta": ["Uñas"] * 2, "final": ["Uñas"] * 2}
+    )
+    with pytest.raises(ValueError, match="2"):
+        check_review_matches_sample(review, muestra)
+
+
+def test_check_review_matches_sample_detecta_ids_faltantes():
+    muestra = pd.DataFrame({"id": [1, 2], "nombre": ["ESMALTE", "GEL"]})
+    review = pd.DataFrame({"id": [1], "nombre": ["ESMALTE"], "propuesta": ["Uñas"], "final": ["Uñas"]})
+    with pytest.raises(ValueError, match="ids"):
+        check_review_matches_sample(review, muestra)

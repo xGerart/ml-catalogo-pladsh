@@ -23,6 +23,8 @@ def write_review_workbook(df: pd.DataFrame, categories: list[str], path: Path) -
     ws.append(COLUMNS)
     for r in rows.itertuples(index=False):
         ws.append([r.id, r.nombre, r.propuesta, r.propuesta])
+        # Un nombre que empieza con "=" se guardaría como fórmula: se fuerza texto.
+        ws.cell(row=ws.max_row, column=2).data_type = "s"
     opciones = ",".join([*categories, NO_SE])
     dv = DataValidation(type="list", formula1=f'"{opciones}"', allow_blank=False)
     dv.error = "Elige una categoría de la lista"
@@ -83,3 +85,15 @@ def build_labeled_dataset(
 
 def load_labeled(path: Path) -> pd.DataFrame:
     return pd.read_csv(path, dtype={"nombre": str, "etiqueta": str})
+
+
+def check_review_matches_sample(review: pd.DataFrame, muestra: pd.DataFrame) -> None:
+    """El Excel solo se edita en `final`: ids y nombres deben ser los de la muestra."""
+    if set(review["id"]) != set(muestra["id"]):
+        raise ValueError(
+            f"Los ids del Excel no coinciden con la muestra: {sorted(set(review['id']) ^ set(muestra['id']))}"
+        )
+    merged = review.merge(muestra, on="id", suffixes=("_excel", "_muestra"))
+    editados = merged.loc[merged["nombre_excel"] != merged["nombre_muestra"], "id"]
+    if len(editados):
+        raise ValueError(f"Nombres editados en el Excel (ids {editados.tolist()}): solo se edita `final`")
