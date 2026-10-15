@@ -83,10 +83,11 @@ def classification_metrics(y_true, y_pred, y_proba, classes) -> dict:
 
 
 def plot_param_curve(search, param: str, ax, log: bool = True, label: str | None = None):
-    """Score medio ± std vs. un hiperparámetro, fijando los demás en su mejor valor.
+    """F1 de entrenamiento y de validación (media ± std) vs. un hiperparámetro.
 
-    Valores no numéricos de la grilla (p. ej. k="all" en SelectKBest) se dibujan como
-    línea horizontal de referencia en vez de como punto del eje x.
+    Los demás hiperparámetros se fijan en su mejor valor. La curva de entrenamiento solo
+    aparece si el GridSearchCV se corrió con return_train_score=True. Valores no
+    numéricos de la grilla (p. ej. k="all") se dibujan como líneas horizontales.
     """
     res = pd.DataFrame(search.cv_results_)
     key = f"param_{param}"
@@ -95,18 +96,22 @@ def plot_param_curve(search, param: str, ax, log: bool = True, label: str | None
             res = res[res[f"param_{other}"].astype(str) == str(best)]
     numeric = pd.to_numeric(res[key], errors="coerce")
     num = res[numeric.notna()].assign(_x=numeric[numeric.notna()]).sort_values("_x")
-    ax.errorbar(num["_x"], num["mean_test_score"], yerr=num["std_test_score"], marker="o", capsize=3, label=label)
-    for _, row in res[numeric.isna()].iterrows():
-        ax.axhline(row["mean_test_score"], ls=":", c="tab:red", label=f"{param} = {row[key]}")
+    series = [("validación", "test", "tab:orange")]
+    if "mean_train_score" in res:
+        series.insert(0, ("entrenamiento", "train", "tab:blue"))
+    for nombre, split, color in series:
+        ax.errorbar(num["_x"], num[f"mean_{split}_score"], yerr=num[f"std_{split}_score"],
+                    marker="o", capsize=3, color=color, label=nombre)
+        for _, row in res[numeric.isna()].iterrows():
+            ax.axhline(row[f"mean_{split}_score"], ls=":", color=color, label=f"{nombre} ({param} = {row[key]})")
     if log:
         ax.set_xscale("log")
     best = search.best_params_[param]
     if pd.notna(pd.to_numeric(best, errors="coerce")):
-        ax.axvline(float(best), ls="--", c="grey")
+        ax.axvline(float(best), ls="--", c="grey", label="óptimo")
     ax.set_xlabel(param)
-    ax.set_ylabel(f"{search.scoring} (validación)")
-    if (numeric.isna()).any():
-        ax.legend(fontsize=8)
+    ax.set_ylabel(str(search.scoring))
+    ax.legend(fontsize=8)
 
 
 def plot_learning_curve(estimator, X, y, cv, ax, scoring="f1_macro", title=""):

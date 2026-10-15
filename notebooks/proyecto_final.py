@@ -300,12 +300,18 @@ grid_tfidf = {
     "clf__C": np.logspace(-2, 4, 10),  # C = 1/λ; hasta 10⁴ para que el óptimo no caiga en el borde
 }
 grid_w2v = {"clf__C": np.logspace(-2, 3, 8), "clf__gamma": ["scale", 1e-3, 1e-2]}
-search_tfidf = GridSearchCV(pipe_tfidf, grid_tfidf, cv=cv_tune, scoring="f1_macro", n_jobs=-1).fit(X_train, y_train)
-search_w2v = GridSearchCV(pipe_w2v, grid_w2v, cv=cv_tune, scoring="f1_macro", n_jobs=-1).fit(X_train, y_train)
+# return_train_score=True: guarda también el F1 de entrenamiento de cada fold, para graficar
+# entrenamiento contra validación y ver dónde empieza el sobreajuste.
+search_tfidf = GridSearchCV(
+    pipe_tfidf, grid_tfidf, cv=cv_tune, scoring="f1_macro", n_jobs=-1, return_train_score=True
+).fit(X_train, y_train)
+search_w2v = GridSearchCV(
+    pipe_w2v, grid_w2v, cv=cv_tune, scoring="f1_macro", n_jobs=-1, return_train_score=True
+).fit(X_train, y_train)
 search_tfidf.best_params_, search_tfidf.best_score_, search_w2v.best_params_, search_w2v.best_score_
 
 # %%
-fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+fig, axes = plt.subplots(1, 3, figsize=(17, 4.5), layout="constrained")
 plot_param_curve(search_tfidf, "clf__C", axes[0])
 axes[0].set_title("TF-IDF + LogReg: C = 1/λ")
 plot_param_curve(search_w2v, "clf__C", axes[1])
@@ -315,20 +321,25 @@ axes[2].set_title("TF-IDF: k de χ²")
 fig.savefig(FIG / "optimizacion.png", bbox_inches="tight")
 
 # %% [markdown]
-# **Lectura de la optimización.**
-# - **C = 1/λ (LogReg).** Con C ≤ 0,05 (λ grande) el modelo está sobre-regularizado:
-#   F1-macro ≈ 0,06, predice una sola clase (**subajuste**). El desempeño sube hasta
-#   estabilizarse en C ≈ 5–500 y cae levemente en C = 10⁴ (λ casi cero: el modelo
-#   empieza a sobreajustar). Óptimo: **C ≈ 464**, F1-macro de validación ≈ 0,739. Que el
-#   óptimo prefiera poca regularización es coherente con features muy distintivas.
-# - **C (SVM).** Mismo patrón; óptimo **C ≈ 7,2 con γ = 10⁻³**, F1-macro ≈ 0,640, con
-#   una meseta a la derecha.
-# - **k de χ².** El F1 sube de forma monótona con k (0,54 con k = 250 → 0,73 con
-#   k = 3500) y el mejor resultado es **sin selección** (línea roja, `all`: 0,739). La
-#   diferencia entre k = 3500 y `all` (0,009) es menor que la desviación estándar entre
-#   folds (≈ 0,04): **χ² no aporta**. La regresión logística regularizada ya asigna peso
-#   casi cero a los n-gramas irrelevantes. Es un resultado, no un error: se probó la
-#   selección contra la ausencia de selección y los datos dicen que conviene conservar
+# **Lectura de la optimización.** Cada gráfica muestra el F1-macro de **entrenamiento**
+# (azul) y de **validación** (naranja), promediados sobre los 15 folds de la CV 5 × 3; las
+# barras son ± una desviación estándar. El hiperparámetro se elige por la curva de
+# **validación**, nunca por la de entrenamiento.
+# - **C = 1/λ (LogReg).** Con C ≤ 0,05 (λ grande) ambas curvas están juntas y bajas
+#   (F1 ≈ 0,06: predice una sola clase): **subajuste**, sesgo alto. Al subir C, las dos
+#   suben; desde C ≈ 5 el entrenamiento llega a 1,0 mientras la validación se estabiliza en
+#   ≈ 0,73 y cae levemente en C = 10⁴: la brecha entre ambas es **varianza**. El óptimo de
+#   validación es **C ≈ 464** (F1 ≈ 0,739), en el interior de la grilla.
+# - **C (SVM).** Mismo patrón: subajuste con C chico, entrenamiento ≈ 1 con C grande.
+#   Óptimo de validación **C ≈ 7,2 con γ = 10⁻³** (F1 ≈ 0,640); más allá la validación
+#   queda plana.
+# - **k de χ².** Con pocos n-gramas (k = 250) el modelo subajusta (entrenamiento 0,74,
+#   validación 0,54). Al crecer k ambas suben; el entrenamiento llega a 1,0 en k ≈ 2000,
+#   pero la validación **sigue subiendo** hasta el mejor resultado, **sin selección** (líneas
+#   punteadas, `all`: 0,739). La diferencia con k = 3500 (0,009) es menor que la
+#   desviación entre folds (≈ 0,04): **χ² no aporta**. La regresión logística regularizada
+#   ya asigna peso casi cero a los n-gramas irrelevantes. Es un resultado, no un error: se
+#   comparó la selección contra no seleccionar y los datos dicen que conviene conservar
 #   todos los n-gramas.
 
 # %%

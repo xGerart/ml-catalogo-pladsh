@@ -63,7 +63,7 @@ def test_plot_param_curve_acepta_valores_no_numericos_como_referencia():
     search = GridSearchCV(pipe, {"sel__k": [2, 4, "all"]}, cv=3, scoring="f1_macro").fit(X, y)
     fig, ax = plt.subplots()
     plot_param_curve(search, "sel__k", ax, log=False)
-    assert any(line.get_label() == "sel__k = all" for line in ax.get_lines())
+    assert any(line.get_label() == "validación (sel__k = all)" for line in ax.get_lines())
     plt.close(fig)
 
 
@@ -77,3 +77,14 @@ def test_corrected_resampled_ttest_es_mas_conservador_que_sin_corregir():
     naive = ttest_rel(scores["logreg"], scores["dummy"]).pvalue
     assert res["p_value"] > naive
     assert res["significativo"] and res["mejor"] == "logreg"
+
+
+def test_plot_param_curve_dibuja_entrenamiento_y_validacion():
+    search = GridSearchCV(
+        LogisticRegression(max_iter=500), {"C": [0.1, 1, 10]}, cv=3, scoring="f1_macro", return_train_score=True
+    ).fit(X, y)
+    fig, ax = plt.subplots()
+    plot_param_curve(search, "C", ax)
+    labels = [t.get_text() for t in ax.get_legend().get_texts()]
+    assert "entrenamiento" in labels and "validación" in labels
+    plt.close(fig)
