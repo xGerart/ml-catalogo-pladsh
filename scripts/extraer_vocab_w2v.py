@@ -5,6 +5,7 @@ aparecen en los nombres de producto. Corre una vez, localmente (requiere gensim)
 Fuente: C. Cardellino, "Spanish Billion Words Corpus and Embeddings", 2016.
 """
 
+import hashlib
 import urllib.request
 
 import numpy as np
@@ -17,10 +18,19 @@ URL = "https://cs.famaf.unc.edu.ar/~ccardellino/SBWCE/SBW-vectors-300-min5.bin.g
 ROOT = find_root()
 RAW = ROOT / "data/raw/SBW-vectors-300-min5.bin.gz"
 OUT = ROOT / "data/processed/w2v_vocab.npz"
+# SHA-256 del archivo descargado el 2026-10-15: si el servidor lo cambia, se detecta.
+SHA256 = "fdf2148fc697b478e61d0d3d90714bd6a97aaa54d95e048b2e9393793f4792b9"
 
 if not RAW.exists():
     print("Descargando 1,1 GB…")
     urllib.request.urlretrieve(URL, RAW)
+
+digest = hashlib.sha256()
+with RAW.open("rb") as f:
+    for chunk in iter(lambda: f.read(1 << 20), b""):
+        digest.update(chunk)
+if digest.hexdigest() != SHA256:
+    raise ValueError(f"SHA-256 inesperado para {RAW.name}: {digest.hexdigest()}")
 
 kv = KeyedVectors.load_word2vec_format(str(RAW), binary=True)
 vocab = sorted({t for name in load_catalog(ROOT / "data/raw/productos.csv")["nombre"] for t in tokenize(name)})
