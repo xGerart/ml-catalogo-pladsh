@@ -53,3 +53,22 @@ def test_sample_for_labeling_falla_si_n_supera_el_catalogo():
 
 def test_find_root_encuentra_pyproject():
     assert (find_root() / "pyproject.toml").exists()
+
+
+def test_unlabeled_catalog_excluye_etiquetados_y_conserva_categoria_erp(tmp_path: Path):
+    from catalogo.data import unlabeled_catalog
+
+    csv = tmp_path / "p.csv"
+    pd.DataFrame(
+        {
+            "id": [1, 2, 3, 4],
+            "nombre": ["Esmalte", "Tinte", "Gel", "esmalte"],
+            "is_active": ["t", "t", "t", "t"],
+            "categoria": ["General", "Tinte", "General", "General"],
+        }
+    ).to_csv(csv, index=False)
+    labeled = pd.DataFrame({"id": [3], "nombre": ["GEL"], "etiqueta": ["Uñas"]})
+    out = unlabeled_catalog(csv, labeled)
+    assert out.columns.tolist() == ["id", "nombre", "categoria_erp"]
+    assert out["id"].tolist() == [1, 2]  # 3 está etiquetado; 4 es duplicado de 1
+    assert out.loc[out["id"] == 2, "categoria_erp"].item() == "Tinte"

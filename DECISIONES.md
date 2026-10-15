@@ -87,9 +87,19 @@ las del notebook final (`notebooks/proyecto_final.ipynb`, semilla 42).
 - **t-SNE:** TF-IDF forma islas por línea de producto; Word2Vec mezcla más las clases.
 - **Por qué pierde Word2Vec:** las palabras sin vector son las marcas, que son lo más informativo.
 
+## 8b. Aplicación al catálogo completo
+
+| Decisión | Por qué | Pregunta probable |
+|---|---|---|
+| Reentrenar el modelo final con los 1 000 etiquetados | Ya se eligieron los hiperparámetros; usar todos los datos da el mejor modelo para producción | *¿No es trampa entrenar con el test?* → No: el test ya cumplió su rol (estimar el desempeño); para *usar* el modelo se aprovecha todo |
+| Umbral de confianza **0,8** elegido con predicciones **out-of-fold** | Elegirlo mirando el test sería usar el test para decidir | *¿Por qué 0,8?* → Out-of-fold: cubre el 72 % con 93,6 % de acierto; el test lo confirma (77 %, 96,8 %) |
+| Revisión manual bajo el umbral | Las clases difíciles (Otros, Piel y cuerpo) concentran las dudas | *¿Cuánto trabajo ahorra?* → Se revisan 2 079 de 9 777 productos: ~79 % menos |
+| Validación externa con la categoría del ERP | 534 productos ya categorizados por la tienda, que el modelo nunca vio | *¿Cómo sabes que acierta fuera de tu muestra?* → 93,3 % de coincidencia; el error típico es Tinte → Cuidado capilar, la frontera prevista |
+
 ## 9. Preguntas trampa probables
 
 - *«¿Usaste el test para elegir hiperparámetros?»* → No. El test se usó una sola vez, al final.
 - *«¿Por qué no balanceaste las clases (SMOTE, class_weight)?»* → Se priorizó F1-macro y estratificación; balancear es una mejora posible, no se probó para no agrandar el alcance.
 - *«¿Las etiquetas las hizo la IA?»* → Las propuso; las revisó una persona fila por fila y se midió contra las categorías puestas por la tienda.
+- *«¿Entonces el modelo etiquetó el catálogo?»* → Sí: 7 698 productos con confianza ≥ 0,8; los otros 2 079 van a revisión manual. Las 1 000 etiquetas de entrenamiento las propuso un LLM y las revisé yo; el modelo de ML aprendió de ellas.
 - *«¿Por qué χ² si no mejoró?»* → La rúbrica lo pide y el resultado es informativo: con regularización, descartar features no ayuda.

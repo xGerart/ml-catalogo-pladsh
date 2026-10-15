@@ -23,12 +23,17 @@ Sobre los 100 folds: Wilcoxon **p ≈ 1,2 × 10⁻¹⁷** y t-test corregido de 
 **p ≈ 4,3 × 10⁻⁶** → la diferencia es significativa. Word2Vec pierde porque no tiene vector para las marcas, que son las
 palabras más informativas del catálogo.
 
+**Aplicación.** Sobre los 9 777 productos restantes del catálogo, el modelo categoriza
+automáticamente el **78,7 %** (confianza ≥ 0,8, con 96,8 % de acierto en test) y deja
+2 079 para revisión manual. Contra las categorías que la tienda ya tenía, coincide en el
+93,3 %.
+
 ## Estructura
 
 - `notebooks/proyecto_final.ipynb` — entregable (abre en Colab con el botón de arriba)
 - `notebooks/01_eda_taxonomia.ipynb` — clustering exploratorio usado para definir la taxonomía
 - `src/catalogo/` — carga de datos, etiquetado, features y evaluación (probado con pytest)
-- `data/processed/` — dataset etiquetado (`id, nombre, etiqueta`) y vectores Word2Vec recortados
+- `data/processed/` — dataset etiquetado (`id, nombre, etiqueta`), catálogo sin etiquetar (`id, nombre, categoria_erp`) y vectores Word2Vec recortados
 - `etiquetado/` — taxonomía, prompt del etiquetado asistido y resumen de la revisión
 - `scripts/` — muestreo, construcción del dataset y recorte del Word2Vec
 - `DECISIONES.md` — por qué se tomó cada decisión
@@ -44,7 +49,8 @@ uv venv --python 3.12 && uv pip install -e ".[dev]"
 
 ## Datos
 
-Nombres de producto de un ERP en producción. Solo se publican `id`, `nombre` y
-`etiqueta` de una muestra de 1 000 productos; no hay datos de clientes ni de ventas.
+Nombres de producto de un ERP en producción. Se publican `id`, `nombre` y `etiqueta` de
+la muestra de 1 000 productos, y `id`, `nombre` y la categoría actual del ERP del resto
+del catálogo; no hay datos de clientes, precios ni ventas.
 Vectores: Spanish Billion Words Corpus Embeddings (C. Cardellino, 2016), recortados al
 vocabulario del catálogo.

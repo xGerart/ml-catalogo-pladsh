@@ -47,3 +47,15 @@ def sample_for_labeling(df: pd.DataFrame, n: int = 1000, seed: int = SEED) -> pd
     if n > len(df):
         raise ValueError(f"Se pidieron {n} productos pero el catálogo tiene {len(df)}")
     return df.sample(n=n, random_state=seed).reset_index(drop=True)
+
+
+def unlabeled_catalog(path: Path, labeled: pd.DataFrame) -> pd.DataFrame:
+    """Catálogo deduplicado sin los productos etiquetados, con la categoría actual del ERP.
+
+    La categoría del ERP no es feature: sirve para validar las predicciones contra lo
+    que el personal de la tienda ya había categorizado.
+    """
+    catalog = load_catalog(path)
+    erp = pd.read_csv(path, usecols=["id", "categoria"]).rename(columns={"categoria": "categoria_erp"})
+    out = catalog[~catalog["id"].isin(labeled["id"])].merge(erp, on="id", how="left")
+    return out.reset_index(drop=True)

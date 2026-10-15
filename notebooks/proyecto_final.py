@@ -32,7 +32,10 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.feature_selection import SelectKBest, chi2
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import ConfusionMatrixDisplay, classification_report
-from sklearn.model_selection import GridSearchCV, RepeatedStratifiedKFold, train_test_split
+from sklearn.model_selection import (
+    GridSearchCV, RepeatedStratifiedKFold, StratifiedKFold, cross_val_predict, train_test_split,
+)
+from sklearn.base import clone
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
@@ -74,7 +77,9 @@ np.random.seed(SEED)
 # aleatoria de 1 000 productos; (3) se comparan dos técnicas —**TF-IDF de n-gramas de
 # caracteres + χ² + regresión logística** contra **Word2Vec preentrenado + SVM**—, con
 # optimización de hiperparámetros por validación cruzada repetida y un **test de
-# Wilcoxon** para decidir si la diferencia es estadísticamente significativa.
+# Wilcoxon** para decidir si la diferencia es estadísticamente significativa; (4) se
+# aplica el mejor modelo a los 9 777 productos restantes, con un umbral de confianza que
+# separa lo que se categoriza solo de lo que necesita revisión manual.
 
 # %%
 df = load_labeled(ROOT / "data/processed/productos_etiquetados.csv")
@@ -437,6 +442,105 @@ fig.savefig(FIG / "tsne.png", bbox_inches="tight")
 # separación de grupos, no la posición absoluta [5].
 
 # %% [markdown]
+# ## 10. Aplicación al catálogo completo
+#
+# El objetivo de negocio era categorizar los productos que quedaron en «General». Se
+# aplica el mejor modelo (TF-IDF + LogReg) a los **9 777 productos del catálogo
+# deduplicado que no forman parte de los 1 000 etiquetados**.
+#
+# **Umbral de confianza.** La confianza de una predicción es la probabilidad que el
+# modelo asigna a la clase elegida. Antes de usarla hay que comprobar que significa
+# algo, y el umbral **no se elige mirando el test** (eso sería usar el test para tomar
+# una decisión): se usan predicciones *out-of-fold* sobre el 80 % de entrenamiento
+# (`cross_val_predict`, 5 folds estratificados) y se mide qué tan seguido acierta el
+# modelo cuando su confianza supera cada umbral.
+
+# %%
+best = search_tfidf.best_estimator_
+proba_oof = cross_val_predict(
+    best, X_train, y_train, cv=StratifiedKFold(5, shuffle=True, random_state=SEED),
+    method="predict_proba", n_jobs=-1,
+)
+clases = np.sort(y_train.unique())
+conf_oof = proba_oof.max(axis=1)
+acierto_oof = clases[proba_oof.argmax(axis=1)] == y_train.to_numpy()
+pd.DataFrame([
+    {
+        "umbral": u,
+        "% que lo supera": round(100 * (conf_oof >= u).mean(), 1),
+        "accuracy sobre esos": round(acierto_oof[conf_oof >= u].mean(), 3),
+    }
+    for u in (0.0, 0.5, 0.6, 0.7, 0.8, 0.9)
+])
+
+# %%
+# Confirmación en el test (200 productos nunca vistos) con el umbral elegido.
+UMBRAL = 0.8
+proba_test = best.predict_proba(X_test)
+conf_test = proba_test.max(axis=1)
+acierto_test = best.classes_[proba_test.argmax(axis=1)] == y_test.to_numpy()
+print(f"Test con confianza ≥ {UMBRAL}: {100 * (conf_test >= UMBRAL).mean():.1f} % de los productos, "
+      f"accuracy {acierto_test[conf_test >= UMBRAL].mean():.3f}")
+
+# %%
+catalogo = pd.read_csv(ROOT / "data/processed/catalogo_sin_etiquetar.csv")
+# Modelo final: mismos hiperparámetros, reentrenado con los 1 000 productos etiquetados.
+modelo_final = clone(best).fit(df["nombre"], df["etiqueta"])
+proba = modelo_final.predict_proba(catalogo["nombre"])
+catalogo["prediccion"] = modelo_final.classes_[proba.argmax(axis=1)]
+catalogo["confianza"] = proba.max(axis=1)
+catalogo["revision"] = np.where(catalogo["confianza"] >= UMBRAL, "automática", "manual")
+
+fig, axes = plt.subplots(1, 2, figsize=(15, 4.5), layout="constrained")
+catalogo["confianza"].plot.hist(bins=30, ax=axes[0])
+axes[0].set_ylabel("productos")
+axes[0].axvline(UMBRAL, ls="--", c="grey")
+axes[0].set_xlabel("confianza de la predicción")
+axes[0].set_title("Confianza en el catálogo completo")
+pd.crosstab(catalogo["prediccion"], catalogo["revision"]).sort_values("automática").plot.barh(stacked=True, ax=axes[1])
+axes[1].set_title(f"Predicciones por categoría (umbral {UMBRAL})")
+axes[1].set_xlabel("productos")
+axes[1].set_ylabel("")
+fig.savefig(FIG / "catalogo_completo.png", bbox_inches="tight")
+catalogo["revision"].value_counts()
+
+# %%
+# Ejemplos: las predicciones más seguras y las más dudosas.
+cols = ["nombre", "prediccion", "confianza"]
+pd.concat({
+    "más seguras": catalogo.nlargest(8, "confianza")[cols].reset_index(drop=True),
+    "más dudosas": catalogo.nsmallest(8, "confianza")[cols].reset_index(drop=True),
+}, axis=1).round(2)
+
+# %%
+# Validación externa: productos que el personal de la tienda ya había categorizado en el
+# ERP (todas categorías capilares). El modelo nunca vio esas etiquetas.
+CAPILARES = {"Cuidado capilar", "Coloración capilar"}
+ya = catalogo[catalogo["categoria_erp"] != "General"]
+print(f"{len(ya)} productos con categoría previa en el ERP")
+print(f"Predichos como capilares: {100 * ya['prediccion'].isin(CAPILARES).mean():.1f} %")
+pd.crosstab(ya["categoria_erp"], ya["prediccion"]).loc[lambda t: t.sum(axis=1).sort_values(ascending=False).index].head(10)
+
+# %% [markdown]
+# **Lectura.**
+# - **Umbral.** Con predicciones out-of-fold, exigir confianza ≥ 0,8 deja el 72 % de los
+#   productos con un **93,6 % de acierto** (contra 79,8 % sin umbral). En el test, que no
+#   participó en la elección, ese umbral cubre el 77 % con un **96,8 %** de acierto: la
+#   confianza del modelo es informativa y el umbral generaliza.
+# - **Catálogo.** De los 9 777 productos, **7 698 (78,7 %) se categorizan
+#   automáticamente** y **2 079 (21,3 %) van a revisión manual**. Revisar 2 079 productos
+#   en vez de 9 777 reduce el trabajo manual en ~79 %.
+# - **Dónde duda.** «Otros» y «Piel y cuerpo» tienen la mayor proporción de revisión
+#   manual; «Coloración capilar» casi no la necesita. Coincide con el F1 por clase del
+#   test. Las predicciones más dudosas son productos realmente ambiguos o fuera de la
+#   taxonomía («SAL DE LAVANDA», «ENVASE PARA GUARDAR PEGAMENTO»).
+# - **Validación externa.** De los 534 productos que el personal de la tienda ya había
+#   categorizado (todos capilares), el modelo predijo como capilares el **93,3 %**, sin
+#   haber visto esas etiquetas. El error más frecuente está en la frontera prevista en la
+#   taxonomía: de los productos que el ERP tiene como «Tinte», 11 se predijeron como
+#   «Cuidado capilar».
+
+# %% [markdown]
 # ## Bitácora de decisiones y ajustes
 #
 # Ajustes hechos **después de ver los resultados**, con su motivo:
@@ -451,9 +555,10 @@ fig.savefig(FIG / "tsne.png", bbox_inches="tight")
 # | 6 | «Extensiones y accesorios de cabello» llegó a 28 ejemplos | Fusionada en «Otros» | Regla fijada *antes* de etiquetar (mínimo 30); completarla a mano rompería la aleatoriedad |
 # | 7 | `RocCurveDisplay` cambió su API en sklearn 1.7 | Curvas ROC con `roc_curve` + matplotlib | Que el notebook corra igual en local (sklearn 1.9) y en Colab |
 # | 8 | El 10 × 10 tardó menos de 1 minuto | Se mantuvo 10 × 10 (no se bajó a 5 × 2) | Es la configuración recomendada por la rúbrica y el costo era bajo |
+# | 9 | Al agregar la aplicación al catálogo, el primer umbral de confianza se eligió mirando el test | Umbral elegido con predicciones out-of-fold del entrenamiento; el test solo lo confirma | Elegirlo con el test es usar el test para decidir: la cifra resultante sería optimista |
 
 # %% [markdown]
-# ## 10. Conclusiones
+# ## 11. Conclusiones
 #
 # 1. **TF-IDF de n-gramas de caracteres + regresión logística supera a Word2Vec
 #    preentrenado + SVM** en este problema, con diferencia significativa (F1-macro 0,759
@@ -470,14 +575,18 @@ fig.savefig(FIG / "tsne.png", bbox_inches="tight")
 #    cuerpo, Otros). Para usarlo en la tienda conviene aplicar el modelo con un umbral de
 #    confianza y mandar a revisión manual los casos dudosos, en vez de categorizar todo
 #    automáticamente.
-# 5. **χ² no mejoró el modelo**: el mejor resultado fue sin selección (0,739) y la
+# 5. **Aplicado al catálogo, el modelo categoriza automáticamente el 78,7 %** de los
+#    9 777 productos (confianza ≥ 0,8, con ~94–97 % de acierto esperado) y deja 2 079 para
+#    revisión manual. Contra las categorías que la tienda ya tenía, coincide en el
+#    93,3 %. El trabajo manual se reduce en ~79 %.
+# 6. **χ² no mejoró el modelo**: el mejor resultado fue sin selección (0,739) y la
 #    diferencia con k = 3500 es menor que la variación entre folds. Con regresión
 #    logística regularizada conviene conservar todos los n-gramas.
 #
 # **Limitaciones:** una sola tienda; etiquetas de un solo revisor (sin acuerdo entre
 # anotadores); scores de CV repetida no independientes; la taxonomía es de esta tienda.
 #
-# ## 11. Referencias
+# ## 12. Referencias
 #
 # [1] C. Cardellino, "Spanish Billion Words Corpus and Embeddings," 2016. [Online]. Available: https://crscardellino.ar/SBWCE/
 #
