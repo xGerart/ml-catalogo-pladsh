@@ -90,12 +90,14 @@ np.random.seed(SEED)
 # categorizado): limpieza, etiquetado asistido de una muestra, dos técnicas optimizadas y
 # comparadas estadísticamente, evaluación en un test apartado y aplicación de la técnica
 # ganadora al resto del catálogo. El test (magenta) solo se usa al final. El diagrama lo
-# genera `scripts/diagrama_flujo.py`.
+# genera `scripts/diagrama_flujo.py` (SVG), exportado a PNG para que se vea en Colab.
 
 # %%
-from IPython.display import SVG, display
+# Se muestra en PNG: Colab no siempre renderiza salidas SVG. El SVG fuente está en el
+# mismo directorio (el README lo usa) y el PNG se exporta de él con un navegador.
+from IPython.display import Image, display
 
-display(SVG(filename=str(ROOT / "reports/figures/diagrama_flujo.svg")))
+display(Image(filename=str(ROOT / "reports/figures/diagrama_flujo.png"), width=900))
 
 # %%
 df = load_labeled(ROOT / "data/processed/productos_etiquetados.csv")

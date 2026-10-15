@@ -2,7 +2,9 @@
 # completo del proyecto: desde el export del ERP hasta el catálogo categorizado, con todo lo que usa.»
 """Genera reports/figures/diagrama_flujo.svg con el estilo de la guía de estudio.
 
-Uso: python scripts/diagrama_flujo.py reports/figures/diagrama_flujo.svg"""
+Uso: python scripts/diagrama_flujo.py reports/figures/diagrama_flujo.svg
+El PNG que muestra el notebook se exporta de este SVG con un navegador (Colab no
+siempre renderiza salidas SVG)."""
 import sys
 
 C = {  # fill, stroke (paleta de guia_img/)
