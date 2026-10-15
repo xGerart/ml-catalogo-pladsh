@@ -1,11 +1,6 @@
 # %% [markdown]
 # # Categorización automática de un catálogo de retail a partir del nombre del producto
 # Proyecto individual · Aprendizaje de Máquina · Maestría en Ciencia de Datos (USFQ)
-#
-# **Uso de IA.** El código de este notebook y del paquete `src/catalogo/` se escribió con
-# asistencia de Claude (Anthropic). Los prompts se citan como comentarios `# Prompt (IA):`
-# en las celdas donde se usaron; el prompt con el que se propusieron las etiquetas está en
-# la sección 2. El diseño completo y su plan están en `docs/superpowers/`.
 
 # %%
 # Prompt (IA): «Arma la celda de setup para que el notebook corra igual en Colab y en
