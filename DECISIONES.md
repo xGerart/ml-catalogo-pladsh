@@ -1,0 +1,91 @@
+# Decisiones del proyecto — guía para la defensa
+
+Cada decisión con su **porqué** y la **pregunta probable** del docente. Las cifras son
+las del notebook final (`notebooks/proyecto_final.ipynb`, semilla 42).
+
+## 1. Problema y datos
+
+| Decisión | Por qué | Pregunta probable → respuesta corta |
+|---|---|---|
+| Clasificar productos por su **nombre** | 10 697 de 11 296 productos (95 %) están en «General»; el nombre es el único dato descriptivo (la descripción está vacía, la marca la tienen solo 602) | *¿Por qué no usaste el precio?* → Se solapa entre categorías y obliga a combinar texto con un número en el pipeline; no aportaba lo suficiente para justificar la complejidad |
+| Descartar **ventas** | No describen qué *es* el producto; un producto nuevo no tiene ventas → el modelo aprendería «viejo vs. nuevo» | |
+| Descartar **código de barras** | Es un identificador arbitrario; la llave correcta para volver al ERP es el `id` | |
+| **Deduplicar** los 506 nombres repetidos antes de muestrear | Si el mismo texto cae en train y test, la métrica sale inflada (*data leakage*) | *¿Cómo evitaste fuga de datos?* → Deduplicado previo + pipelines que ajustan TF-IDF/χ² dentro de cada fold |
+| Muestra **aleatoria** de 1 000 | Para que el test represente al catálogo; las ~600 categorías existentes están sesgadas (todas capilares) | *¿Por qué no usaste las categorías que ya existían?* → Solo cubren cabello; se usaron como **control externo**: 96,7 % de acuerdo |
+
+## 2. Taxonomía y etiquetado
+
+| Decisión | Por qué | Pregunta probable |
+|---|---|---|
+| Taxonomía definida **a mano** | k-means agrupaba por marca, no por tipo de producto (silhouette 0,02–0,04) | *¿Por qué no usaste los clústeres como categorías?* → Agrupan «todo ALFAPARF» junto: tintes, shampoo y aceites. No sirven como categoría de negocio |
+| Separar **Coloración** de **Cuidado capilar** | Juntas serían la clase más grande y son rubros distintos en la tienda | Frontera: matizantes (shampoo matizante = cuidado; tinte = coloración) |
+| Regla «la herramienta va a su dominio» | Un pincel de uñas es de uñas, aunque sea «herramienta» | *¿Por qué la cosmetiquera es Maquillaje?* → Misma regla: accesorio del dominio maquillaje |
+| **Etiquetado asistido** (LLM propone, humano revisa) | 1 000 etiquetas en ~40 min de revisión en vez de ~2 h | *¿Son confiables las etiquetas?* → Revisión humana de las 1 000 (0,4 % corregido) + control externo con categorías del ERP (96,7 %) |
+| Mínimo **30 ejemplos** por clase, fijado *antes* de etiquetar | Con menos, las métricas por clase son inestables | *¿Por qué fusionaste Extensiones?* → Llegó a 28; la regla estaba fijada antes. Completarla a mano rompería la aleatoriedad |
+
+## 3. Representación (feature extraction)
+
+| Decisión | Por qué | Pregunta probable |
+|---|---|---|
+| **n-gramas de caracteres** (`char_wb`), no de palabras | Abreviaturas y errores: «ESM», «ESMALTE», «ESAMALTE» comparten «esm», «sma» | *¿Qué es `char_wb`?* → n-gramas de caracteres solo dentro de cada palabra (con bordes), no cruzando espacios |
+| `sublinear_tf=True` | Usa log(1+tf): una palabra repetida no pesa linealmente más | |
+| `min_df=2` | Descarta n-gramas que aparecen en un solo nombre (ruido, no generalizan) | |
+| **Word2Vec del Spanish Billion Words Corpus** | Sugerencia del docente; es Word2Vec literal, español, licencia libre, citable | *¿Por qué preentrenado y no entrenarlo tú?* → 1 000 nombres de ~5 palabras (~5 000 tokens) es muy poco para entrenar embeddings |
+| Vector del producto = **promedio** de sus palabras | Forma estándar y simple de pasar de palabras a documento | *¿Qué pierde el promedio?* → El orden y el peso relativo de las palabras |
+| Recortar Word2Vec al vocabulario del catálogo | El modelo pesa 1,1 GB; Colab solo necesita ~4 000 palabras (4,5 MB) | |
+
+## 4. Feature selection
+
+| Decisión | Por qué | Pregunta probable |
+|---|---|---|
+| **χ²** sobre TF-IDF | Es un filtro (no entrena modelo), barato, exigido por la rúbrica | *¿Qué mide χ²?* → Dependencia entre la presencia de un n-grama y la clase |
+| `k` dentro de la grilla | La selección se optimiza con la misma CV, sin fuga | |
+| No aplicar χ² a Word2Vec | χ² exige features ≥ 0 y los promedios Word2Vec son negativos; además ya es denso (300 dims) | |
+| **Resultado:** el mejor k es el mayor | La LogReg regularizada ya anula los n-gramas inútiles | *¿Entonces para qué sirvió?* → Se probó y los datos dicen que no conviene descartar; es un hallazgo |
+
+## 5. Modelos e hiperparámetros
+
+| Decisión | Por qué | Pregunta probable |
+|---|---|---|
+| **Regresión logística** con TF-IDF | Lineal, interpretable, funciona muy bien en texto disperso de alta dimensión | *¿Qué es C?* → C = 1/λ: C grande = poca regularización |
+| **SVM RBF** con Word2Vec | El espacio denso de 300 dims puede necesitar frontera no lineal | *¿Qué es γ?* → Ancho del kernel: γ grande = frontera más irregular (más varianza) |
+| `StandardScaler` antes del SVM | El kernel RBF depende de distancias; sin escalar, dominan las dimensiones de mayor rango | |
+| `probability=True` en el SVC | Para obtener probabilidades y calcular AUC/ROC | |
+| Grillas en **escala logarítmica** | El efecto de C es multiplicativo | |
+| Tuning con **5 × 3** repeated stratified k-fold | Cada combinación se entrena 15 veces; 10 × 10 sería 100 veces por combinación | *¿Por qué no nested CV?* → La rúbrica lo desaconseja por tiempo; el test apartado cumple el rol de estimación final |
+| **F1-macro** como métrica | Clases desbalanceadas (6:1); accuracy premiaría acertar solo «Uñas» | *¿Diferencia entre macro y weighted?* → Macro promedia clases por igual; weighted pondera por soporte |
+
+## 6. Ajustes hechos al ver los resultados
+
+| Qué se vio | Ajuste | Por qué |
+|---|---|---|
+| Grilla de χ² llegaba a k = 5000, pero los folds tienen 3 760–4 674 n-gramas | k bajado a 250–3500 | k > features = «todas»: la selección no se evaluaba |
+| Con C hasta 10³, el óptimo de LogReg cayó en el **borde** (C = 1000) | Grilla extendida a 10⁴ | Óptimo en el borde = no sabes si hay uno mejor afuera; extendida, quedó en C ≈ 464 (interior) |
+| `RocCurveDisplay` cambió de API en sklearn 1.7 | ROC dibujada con `roc_curve` + matplotlib | Mismo resultado en local (1.9) y en Colab |
+| 10 × 10 tardó < 1 min | Se mantuvo 10 × 10 | Es lo que recomienda la rúbrica |
+
+## 7. Comparación estadística
+
+| Decisión | Por qué | Pregunta probable |
+|---|---|---|
+| **Mismos 100 folds** para ambos modelos | Hace el test **pareado** | *¿Por qué pareado?* → Cada fold es la misma partición para ambos; se comparan diferencias fold a fold |
+| **Wilcoxon** y no t-test | No asume normalidad de las diferencias | *¿H₀?* → La mediana de las diferencias es 0 |
+| **Estratificado** | Con clases desbalanceadas un fold podría quedar sin una clase | |
+| Limitación declarada | Los scores de CV repetida no son independientes → test optimista | *¿Invalida el resultado?* → Con p ≈ 2 × 10⁻¹⁷ la conclusión no cambia |
+
+**Resultado:** 0,748 vs 0,648 F1-macro, p ≈ 1,9 × 10⁻¹⁷ → TF-IDF + LogReg es mejor.
+
+## 8. Lectura de resultados
+
+- **Curvas de aprendizaje → alta varianza:** train ≈ 1, validación ≈ 0,73 y aún subiendo → más datos ayudarían.
+- **Matriz de confusión:** fallan Herramientas (F1 0,40) y Piel y cuerpo (0,50) por vocabulario compartido («mascarilla», «crema», «pinza», «lima»).
+- **AUC alto (0,97) con F1-macro menor (0,73):** el modelo ordena bien, pero el umbral argmax falla en clases chicas.
+- **t-SNE:** TF-IDF forma islas por línea de producto; Word2Vec mezcla más las clases.
+- **Por qué pierde Word2Vec:** las palabras sin vector son las marcas, que son lo más informativo.
+
+## 9. Preguntas trampa probables
+
+- *«¿Usaste el test para elegir hiperparámetros?»* → No. El test se usó una sola vez, al final.
+- *«¿Por qué no balanceaste las clases (SMOTE, class_weight)?»* → Se priorizó F1-macro y estratificación; balancear es una mejora posible, no se probó para no agrandar el alcance.
+- *«¿Las etiquetas las hizo la IA?»* → Las propuso; las revisó una persona fila por fila y se midió contra las categorías puestas por la tienda.
+- *«¿Por qué χ² si no mejoró?»* → La rúbrica lo pide y el resultado es informativo: con regularización, descartar features no ayuda.
