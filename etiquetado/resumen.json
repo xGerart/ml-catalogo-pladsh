@@ -1,0 +1,39 @@
+{
+  "revisados": 1000,
+  "excluidos_no_se": 0,
+  "etiquetados": 1000,
+  "corregidos": 4,
+  "pct_corregidos": 0.4,
+  "fusionadas_en_otros": [
+    "Extensiones y accesorios de cabello"
+  ],
+  "distribucion": {
+    "Uñas": 318,
+    "Cuidado capilar": 150,
+    "Maquillaje": 136,
+    "Coloración capilar": 118,
+    "Otros": 84,
+    "Piel y cuerpo": 76,
+    "Pestañas y cejas": 66,
+    "Herramientas y equipos de cabello": 52
+  },
+  "control_capilar": {
+    "productos": 61,
+    "propuesta_capilar_pct": 96.72,
+    "final_capilar_pct": 96.72,
+    "fuera_de_capilar": [
+      {
+        "id": 474,
+        "nombre": "BIOAQUA RICE RAW PULP 70ML",
+        "categoria": "Aceite",
+        "final": "Piel y cuerpo"
+      },
+      {
+        "id": 430,
+        "nombre": "DBELESA GOTAS DE NVIDIA 30ML",
+        "categoria": "Serum",
+        "final": "Piel y cuerpo"
+      }
+    ]
+  }
+}
