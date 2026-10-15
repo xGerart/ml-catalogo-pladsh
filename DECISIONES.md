@@ -98,6 +98,7 @@ las del notebook final (`notebooks/proyecto_final.ipynb`, semilla 42).
 
 ## 9. Preguntas trampa probables
 
+- *«¿Esas curvas de optimización son del train?»* → Hay dos: entrenamiento (azul) y validación (naranja), ambas promediadas sobre los 15 folds de la CV 5 × 3. El hiperparámetro se elige por la de validación; la de entrenamiento muestra el sobreajuste (llega a 1,0 mientras la validación se queda en ~0,74).
 - *«¿Usaste el test para elegir hiperparámetros?»* → No. El test se usó una sola vez, al final.
 - *«¿Por qué no balanceaste las clases (SMOTE, class_weight)?»* → Se priorizó F1-macro y estratificación; balancear es una mejora posible, no se probó para no agrandar el alcance.
 - *«¿Las etiquetas las hizo la IA?»* → Las propuso; las revisó una persona fila por fila y se midió contra las categorías puestas por la tienda.
