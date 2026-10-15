@@ -83,6 +83,20 @@ np.random.seed(SEED)
 # aplica el mejor modelo a los 9 777 productos restantes, con un umbral de confianza que
 # separa lo que se categoriza solo de lo que necesita revisión manual.
 
+# %% [markdown]
+# ### Flujo del proyecto
+#
+# De la entrada (nombres de producto exportados del ERP) a la salida (catálogo
+# categorizado): limpieza, etiquetado asistido de una muestra, dos técnicas optimizadas y
+# comparadas estadísticamente, evaluación en un test apartado y aplicación de la técnica
+# ganadora al resto del catálogo. El test (magenta) solo se usa al final. El diagrama lo
+# genera `scripts/diagrama_flujo.py`.
+
+# %%
+from IPython.display import SVG, display
+
+display(SVG(filename=str(ROOT / "reports/figures/diagrama_flujo.svg")))
+
 # %%
 df = load_labeled(ROOT / "data/processed/productos_etiquetados.csv")
 resumen = json.loads((ROOT / "etiquetado/resumen.json").read_text())

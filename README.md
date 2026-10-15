@@ -10,6 +10,10 @@ abreviaturas y marcas. Se clasifica cada producto en una de 8 macro-categorías 
 comparan dos técnicas: **TF-IDF de n-gramas de caracteres + χ² + regresión logística**
 contra **Word2Vec preentrenado + SVM**.
 
+## Flujo
+
+![Flujo del proyecto: de los nombres del ERP al catálogo categorizado](reports/figures/diagrama_flujo.svg)
+
 ## Resultados
 
 | | TF-IDF + LogReg | Word2Vec + SVM |
