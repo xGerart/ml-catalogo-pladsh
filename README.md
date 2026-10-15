@@ -23,6 +23,9 @@ contra **Word2Vec preentrenado + SVM**.
 | Accuracy, test | **0,825** | 0,695 |
 | AUC macro, test | **0,973** | 0,910 |
 
+Los hiperparámetros se optimizaron con búsqueda en grilla y, como extra, con Optuna
+(TPE), que llegó al mismo óptimo de TF-IDF con un tercio de las evaluaciones.
+
 Sobre los 100 folds: Wilcoxon **p ≈ 1,2 × 10⁻¹⁷** y t-test corregido de Nadeau–Bengio
 **p ≈ 4,3 × 10⁻⁶** → la diferencia es significativa. Word2Vec pierde porque no tiene vector para las marcas, que son las
 palabras más informativas del catálogo.

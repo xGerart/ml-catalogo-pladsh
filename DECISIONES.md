@@ -56,6 +56,16 @@ las del notebook final (`notebooks/proyecto_final.ipynb`, semilla 42).
 | Tuning con **5 × 3** repeated stratified k-fold | Cada combinación se entrena 15 veces; 10 × 10 sería 100 veces por combinación | *¿Por qué no nested CV?* → La rúbrica lo desaconseja por tiempo; el test apartado cumple el rol de estimación final |
 | **F1-macro** como métrica | Clases desbalanceadas (6:1); accuracy premiaría acertar solo «Uñas» | *¿Diferencia entre macro y weighted?* → Macro promedia clases por igual; weighted pondera por soporte |
 
+## 5b. Optuna (extra de la rúbrica)
+
+| Decisión | Por qué | Pregunta probable → respuesta corta |
+|---|---|---|
+| Optuna con **TPE** (optimización bayesiana) | Busca en rangos continuos y concentra los intentos donde el modelo anduvo bien | *¿Qué es TPE?* → Separa los intentos en «buenos» y «malos», modela la densidad de los hiperparámetros en cada grupo y propone donde la razón buenos/malos es mayor |
+| Misma CV 5 × 3, misma métrica y semilla fija | Para comparar justo contra la grilla y que sea reproducible | *¿Usaste el test?* → No; igual que la grilla, solo el 80 % de entrenamiento |
+| 40 intentos para TF-IDF (grilla: 120) y 20 para SVM (grilla: 24) | Mostrar si llega al óptimo con menos evaluaciones | *¿Y llegó?* → TF-IDF: 0,7386 vs 0,7387 con un tercio; SVM: 0,6472 vs 0,6404 |
+| **No** se reemplazaron los hiperparámetros de la grilla en el resto del notebook | Las mejoras (0,0001 y 0,007) son menores que la variación entre folds (≈ 0,04) | *¿Por qué no usaste lo de Optuna?* → No cambia ninguna conclusión; Optuna sirve como confirmación y muestra eficiencia |
+| Importancia con **PED-ANOVA**, fijado explícitamente | Es el default de Optuna 5; fijarlo evita que cambie con la versión | *¿Qué hiperparámetro importa más?* → λ (80 %), luego n-gramas (11 %) y k (8 %) |
+
 ## 6. Ajustes hechos al ver los resultados
 
 | Qué se vio | Ajuste | Por qué |

@@ -13,7 +13,7 @@ if "google.colab" in sys.modules:
     import subprocess
     subprocess.run(["git", "clone", "-q", "https://github.com/xGerart/ml-catalogo-pladsh.git"], check=False)
     os.chdir("ml-catalogo-pladsh")
-    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "wordcloud"], check=True)
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "wordcloud", "optuna"], check=True)
 sys.path.insert(0, str(Path.cwd() if (Path.cwd() / "src").exists() else Path.cwd().parent) + "/src")
 
 import json
@@ -391,6 +391,121 @@ fig.savefig(FIG / "curvas_aprendizaje.png", bbox_inches="tight")
 # representación (no conoce las marcas).
 
 # %% [markdown]
+# ### 7b. Optimización con Optuna (extra)
+#
+# La búsqueda en grilla prueba **todas** las combinaciones de una lista fija de valores.
+# **Optuna** [19] hace optimización bayesiana con TPE (*Tree-structured Parzen
+# Estimator*) [20]: con los intentos ya evaluados modela qué zonas del espacio dan
+# buenos resultados y muestrea más ahí. Eso permite buscar en **rangos continuos** (λ
+# puede tomar cualquier valor entre los extremos, no solo los de la grilla) con menos
+# evaluaciones.
+#
+# Para que la comparación con la grilla sea justa se usa **exactamente lo mismo**: el
+# mismo 80 % de entrenamiento, la misma CV repeated stratified 5 × 3, la misma métrica
+# (F1-macro) y semilla fija en el muestreador. El test sigue sin tocarse. Se dan **40
+# intentos** a TF-IDF (la grilla evaluó 120 combinaciones) y **20** al SVM (la grilla, 24).
+
+# %%
+# Prompt (IA): «Optimiza las dos técnicas con Optuna (TPE con semilla fija) usando la misma
+# CV 5×3 y F1-macro que la grilla, buscando λ en escala log continua; compara con la grilla.»
+import optuna
+import optuna.visualization.matplotlib as ov
+from sklearn.model_selection import cross_val_score
+
+optuna.logging.set_verbosity(optuna.logging.WARNING)
+warnings.filterwarnings("ignore", category=optuna.exceptions.ExperimentalWarning)
+
+
+def objetivo_tfidf(trial):
+    lam = trial.suggest_float("lambda", 1e-5, 1e2, log=True)
+    n_max = trial.suggest_categorical("ngram_max", [4, 5])
+    k = trial.suggest_categorical("k", [250, 500, 1000, 2000, 3500, "all"])
+    pipe = clone(pipe_tfidf).set_params(tfidf__ngram_range=(2, n_max), chi2__k=k, clf__C=1 / lam)
+    return cross_val_score(pipe, X_train, y_train, cv=cv_tune, scoring="f1_macro", n_jobs=-1).mean()
+
+
+def objetivo_w2v(trial):
+    lam = trial.suggest_float("lambda", 1e-3, 1e2, log=True)
+    gamma = trial.suggest_float("gamma", 1e-4, 1e-1, log=True)
+    pipe = clone(pipe_w2v).set_params(clf__C=1 / lam, clf__gamma=gamma)
+    return cross_val_score(pipe, X_train, y_train, cv=cv_tune, scoring="f1_macro", n_jobs=-1).mean()
+
+
+estudio_tfidf = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=SEED))
+estudio_tfidf.optimize(objetivo_tfidf, n_trials=40)
+estudio_w2v = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=SEED))
+estudio_w2v.optimize(objetivo_w2v, n_trials=20)
+
+bt, bw = search_tfidf.best_params_, search_w2v.best_params_
+comparacion_optuna = pd.DataFrame([
+    {"técnica": "TF-IDF + LogReg", "método": "grilla", "evaluaciones": len(search_tfidf.cv_results_["params"]),
+     "F1-macro CV": search_tfidf.best_score_, "λ": 1 / bt["clf__C"], "n-gramas": f"2–{bt['tfidf__ngram_range'][1]}",
+     "k": bt["chi2__k"], "γ": None},
+    {"técnica": "TF-IDF + LogReg", "método": "Optuna (TPE)", "evaluaciones": len(estudio_tfidf.trials),
+     "F1-macro CV": estudio_tfidf.best_value, "λ": estudio_tfidf.best_params["lambda"],
+     "n-gramas": f"2–{estudio_tfidf.best_params['ngram_max']}", "k": estudio_tfidf.best_params["k"], "γ": None},
+    {"técnica": "Word2Vec + SVM", "método": "grilla", "evaluaciones": len(search_w2v.cv_results_["params"]),
+     "F1-macro CV": search_w2v.best_score_, "λ": 1 / bw["clf__C"], "n-gramas": None, "k": None, "γ": bw["clf__gamma"]},
+    {"técnica": "Word2Vec + SVM", "método": "Optuna (TPE)", "evaluaciones": len(estudio_w2v.trials),
+     "F1-macro CV": estudio_w2v.best_value, "λ": estudio_w2v.best_params["lambda"], "n-gramas": None, "k": None,
+     "γ": estudio_w2v.best_params["gamma"]},
+])
+comparacion_optuna.style.format({"F1-macro CV": "{:.4f}", "λ": "{:.4g}", "γ": "{:.4g}"}, na_rep="—")
+
+# %%
+# Prompt (IA): «Grafica el historial de optimización de ambos estudios, la importancia de
+# los hiperparámetros de TF-IDF y el contorno λ vs. γ del SVM con la API matplotlib de Optuna.»
+def guardar(ax, titulo, archivo, ylabel=None, xlabel=None):
+    """Reemplaza título y etiquetas (Optuna los pone en inglés) y guarda la figura."""
+    ax.set_title("", loc="left")  # Optuna pone su título en inglés a la izquierda
+    ax.set_title("", loc="right")
+    ax.set_title(titulo)
+    if ylabel:
+        ax.set_ylabel(ylabel)
+    if xlabel:
+        ax.set_xlabel(xlabel)
+    ax.figure.savefig(FIG / archivo, bbox_inches="tight")
+    plt.show()
+
+
+for estudio, nombre, archivo in [(estudio_tfidf, "TF-IDF + LogReg", "optuna_historial_tfidf.png"),
+                                 (estudio_w2v, "Word2Vec + SVM", "optuna_historial_w2v.png")]:
+    ax = ov.plot_optimization_history(estudio)
+    ax.legend(["F1-macro de cada intento", "mejor hasta ese intento"], fontsize=8)
+    guardar(ax, f"Optuna · {nombre}: historial", archivo, ylabel="F1-macro (CV 5 × 3)", xlabel="intento")
+# Evaluador fijado explícitamente (es el default de Optuna 5) para que no cambie con la versión.
+ax = ov.plot_param_importances(estudio_tfidf, evaluator=optuna.importance.PedAnovaImportanceEvaluator())
+ax.get_legend().remove()
+guardar(ax, "Optuna · TF-IDF + LogReg: importancia de hiperparámetros", "optuna_importancia_tfidf.png",
+        xlabel="importancia (PED-ANOVA)", ylabel="hiperparámetro")
+ax = ov.plot_contour(estudio_w2v, params=["gamma", "lambda"])
+guardar(ax, "Optuna · Word2Vec + SVM: F1-macro según λ y γ", "optuna_contorno_w2v.png", ylabel="λ = 1/C", xlabel="γ")
+
+# %% [markdown]
+# **Lectura de Optuna.**
+# - **TF-IDF + LogReg: mismo resultado con un tercio de las evaluaciones.** Optuna llega a
+#   F1-macro 0,7386 con 40 intentos; la grilla, a 0,7387 con 120 combinaciones. Ambos
+#   eligen n-gramas 2–5 y sin selección (`k = all`); Optuna elige λ ≈ 0,0095 y la grilla
+#   λ ≈ 0,0022, dos puntos de la misma **meseta** que ya se veía en la curva de λ (con
+#   λ entre 10⁻³ y 10⁻¹ el error de validación es prácticamente igual). El historial muestra
+#   que el mejor valor se alcanza casi desde el inicio; los intentos malos son la
+#   exploración de λ grandes (subajuste).
+# - **Word2Vec + SVM: Optuna mejora levemente a la grilla.** F1-macro 0,6472 con 20
+#   intentos contra 0,6404 con 24, porque busca en un rango continuo y encuentra un punto
+#   **entre** los valores de la grilla (λ ≈ 0,060 y γ ≈ 0,0016; la grilla solo tenía
+#   λ ≈ 0,139 y γ = 0,001 cerca de ahí). El contorno muestra la zona buena (λ < ~0,3 y
+#   γ ≤ ~2 × 10⁻³) y que TPE concentra sus intentos en ella.
+# - **Importancia de hiperparámetros (TF-IDF, PED-ANOVA):** λ explica el 80 % de la
+#   variación del F1, el largo de los n-gramas el 11 % y k apenas el 8 %. La
+#   regularización es lo que más importa, y es coherente con que χ² no aporte.
+# - **Consecuencia para el resto del notebook:** las mejoras de Optuna (0,0001 y 0,007 de
+#   F1) son mucho menores que la variación entre folds (≈ 0,04) y que la distancia entre
+#   las dos técnicas (≈ 0,10). Por eso la comparación estadística y el modelo final usan
+#   los hiperparámetros de la grilla: cambiarlos no altera ninguna conclusión. Lo que
+#   Optuna aporta es **eficiencia** (mismo óptimo con menos evaluaciones) y la
+#   confirmación de que la grilla no dejó un óptimo mejor sin explorar.
+
+# %% [markdown]
 # ## 8. Comparación estadística: Wilcoxon sobre repeated stratified 10 × 10 CV
 #
 # Los dos modelos ya optimizados se evalúan con **los mismos 100 folds**
@@ -728,7 +843,11 @@ fig.savefig(FIG / "validacion_erp.png", bbox_inches="tight")
 #    9 777 productos (confianza ≥ 0,8, con ~94–97 % de acierto esperado) y deja 2 079 para
 #    revisión manual. Contra las categorías que la tienda ya tenía, coincide en el
 #    93,3 %. El trabajo manual se reduce en ~79 %.
-# 6. **χ² no mejoró el modelo**: el mejor resultado fue sin selección (0,739) y la
+# 6. **Optuna (TPE) confirma la optimización por grilla**: llega al mismo óptimo de
+#    TF-IDF con un tercio de las evaluaciones (40 contra 120) y mejora al SVM en solo
+#    0,007 de F1, dentro de la variación entre folds. La grilla no dejó un óptimo mejor sin
+#    explorar, y λ es el hiperparámetro que más importa (80 %).
+# 7. **χ² no mejoró el modelo**: el mejor resultado fue sin selección (0,739) y la
 #    diferencia con k = 3500 es menor que la variación entre folds. Con regresión
 #    logística regularizada conviene conservar todos los n-gramas.
 #
@@ -772,3 +891,7 @@ fig.savefig(FIG / "validacion_erp.png", bbox_inches="tight")
 # [17] SciPy developers, "scipy.stats.wilcoxon." [Online]. Available: https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.wilcoxon.html
 #
 # [18] scikit-learn developers, "Pipelines and composite estimators." [Online]. Available: https://scikit-learn.org/stable/modules/compose.html
+#
+# [19] T. Akiba, S. Sano, T. Yanase, T. Ohta, and M. Koyama, "Optuna: A next-generation hyperparameter optimization framework," in *Proc. 25th ACM SIGKDD Int. Conf. Knowl. Discovery Data Mining*, 2019, pp. 2623–2631.
+#
+# [20] J. Bergstra, R. Bardenet, Y. Bengio, and B. Kégl, "Algorithms for hyper-parameter optimization," in *Adv. Neural Inf. Process. Syst. 24*, 2011, pp. 2546–2554.
