@@ -47,6 +47,28 @@ def wilcoxon_test(scores: pd.DataFrame, a: str, b: str, alpha: float = 0.05) -> 
     }
 
 
+def corrected_resampled_ttest(scores: pd.DataFrame, a: str, b: str, n_train: int, n_test: int, alpha: float = 0.05) -> dict:
+    """t-test con la corrección de Nadeau y Bengio (2003) para CV repetida.
+
+    Los folds comparten datos, así que la varianza de las diferencias se subestima; la
+    corrección la infla por (1/J + n_test/n_train) en lugar de 1/J.
+    """
+    from scipy.stats import t as t_dist
+
+    d = (scores[a] - scores[b]).to_numpy()
+    J = len(d)
+    var = d.var(ddof=1)
+    t_stat = d.mean() / np.sqrt((1 / J + n_test / n_train) * var)
+    p = 2 * t_dist.sf(abs(t_stat), df=J - 1)
+    return {
+        "t": float(t_stat),
+        "p_value": float(p),
+        "alpha": alpha,
+        "significativo": bool(p < alpha),
+        "mejor": a if d.mean() >= 0 else b,
+    }
+
+
 def classification_metrics(y_true, y_pred, y_proba, classes) -> dict:
     y_bin = label_binarize(y_true, classes=classes)
     return {
@@ -61,20 +83,30 @@ def classification_metrics(y_true, y_pred, y_proba, classes) -> dict:
 
 
 def plot_param_curve(search, param: str, ax, log: bool = True, label: str | None = None):
-    """Score medio ± std vs. un hiperparámetro, fijando los demás en su mejor valor."""
+    """Score medio ± std vs. un hiperparámetro, fijando los demás en su mejor valor.
+
+    Valores no numéricos de la grilla (p. ej. k="all" en SelectKBest) se dibujan como
+    línea horizontal de referencia en vez de como punto del eje x.
+    """
     res = pd.DataFrame(search.cv_results_)
     key = f"param_{param}"
     for other, best in search.best_params_.items():
         if other != param:
             res = res[res[f"param_{other}"].astype(str) == str(best)]
-    res = res.sort_values(key)
-    x = res[key].astype(float)
-    ax.errorbar(x, res["mean_test_score"], yerr=res["std_test_score"], marker="o", capsize=3, label=label)
+    numeric = pd.to_numeric(res[key], errors="coerce")
+    num = res[numeric.notna()].assign(_x=numeric[numeric.notna()]).sort_values("_x")
+    ax.errorbar(num["_x"], num["mean_test_score"], yerr=num["std_test_score"], marker="o", capsize=3, label=label)
+    for _, row in res[numeric.isna()].iterrows():
+        ax.axhline(row["mean_test_score"], ls=":", c="tab:red", label=f"{param} = {row[key]}")
     if log:
         ax.set_xscale("log")
-    ax.axvline(float(search.best_params_[param]), ls="--", c="grey")
+    best = search.best_params_[param]
+    if pd.notna(pd.to_numeric(best, errors="coerce")):
+        ax.axvline(float(best), ls="--", c="grey")
     ax.set_xlabel(param)
     ax.set_ylabel(f"{search.scoring} (validación)")
+    if (numeric.isna()).any():
+        ax.legend(fontsize=8)
 
 
 def plot_learning_curve(estimator, X, y, cv, ax, scoring="f1_macro", title=""):

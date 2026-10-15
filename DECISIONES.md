@@ -41,7 +41,8 @@ las del notebook final (`notebooks/proyecto_final.ipynb`, semilla 42).
 | **χ²** sobre TF-IDF | Es un filtro (no entrena modelo), barato, exigido por la rúbrica | *¿Qué mide χ²?* → Dependencia entre la presencia de un n-grama y la clase |
 | `k` dentro de la grilla | La selección se optimiza con la misma CV, sin fuga | |
 | No aplicar χ² a Word2Vec | χ² exige features ≥ 0 y los promedios Word2Vec son negativos; además ya es denso (300 dims) | |
-| **Resultado:** el mejor k es el mayor | La LogReg regularizada ya anula los n-gramas inútiles | *¿Entonces para qué sirvió?* → Se probó y los datos dicen que no conviene descartar; es un hallazgo |
+| `all` (sin selección) incluido en la grilla | Sin él no se puede afirmar si χ² ayuda o no | |
+| **Resultado:** el mejor es `all` (0,739); k = 3500 da 0,729 | La diferencia (0,009) es menor que la desviación entre folds (≈ 0,04); la LogReg regularizada ya anula los n-gramas inútiles | *¿Entonces para qué sirvió?* → Se comparó contra no seleccionar y los datos dicen que no conviene descartar; es un hallazgo |
 
 ## 5. Modelos e hiperparámetros
 
@@ -61,6 +62,8 @@ las del notebook final (`notebooks/proyecto_final.ipynb`, semilla 42).
 |---|---|---|
 | Grilla de χ² llegaba a k = 5000, pero los folds tienen 3 760–4 674 n-gramas | k bajado a 250–3500 | k > features = «todas»: la selección no se evaluaba |
 | Con C hasta 10³, el óptimo de LogReg cayó en el **borde** (C = 1000) | Grilla extendida a 10⁴ | Óptimo en el borde = no sabes si hay uno mejor afuera; extendida, quedó en C ≈ 464 (interior) |
+| Con k hasta 3500, el mejor k también cayó en el **borde** | Se agregó `all` (sin selección) | Mismo criterio que con C; `all` resultó el mejor |
+| La revisión independiente señaló que el p de Wilcoxon es optimista | Se agregó el t-test corregido de Nadeau–Bengio | El p corregido (≈ 4,3 × 10⁻⁶) es el defendible |
 | `RocCurveDisplay` cambió de API en sklearn 1.7 | ROC dibujada con `roc_curve` + matplotlib | Mismo resultado en local (1.9) y en Colab |
 | 10 × 10 tardó < 1 min | Se mantuvo 10 × 10 | Es lo que recomienda la rúbrica |
 
@@ -69,17 +72,18 @@ las del notebook final (`notebooks/proyecto_final.ipynb`, semilla 42).
 | Decisión | Por qué | Pregunta probable |
 |---|---|---|
 | **Mismos 100 folds** para ambos modelos | Hace el test **pareado** | *¿Por qué pareado?* → Cada fold es la misma partición para ambos; se comparan diferencias fold a fold |
-| **Wilcoxon** y no t-test | No asume normalidad de las diferencias | *¿H₀?* → La mediana de las diferencias es 0 |
+| **Wilcoxon** y no t-test | No asume normalidad de las diferencias | *¿H₀?* → Las diferencias son simétricas alrededor de 0 (ningún modelo es sistemáticamente mejor) |
 | **Estratificado** | Con clases desbalanceadas un fold podría quedar sin una clase | |
-| Limitación declarada | Los scores de CV repetida no son independientes → test optimista | *¿Invalida el resultado?* → Con p ≈ 2 × 10⁻¹⁷ la conclusión no cambia |
+| **t-test corregido de Nadeau–Bengio** además de Wilcoxon | Los folds comparten datos → la varianza de las diferencias se subestima; la corrección la infla por (1/J + n_test/n_train) | *¿Tu p-value es real?* → El de Wilcoxon (10⁻¹⁷) es optimista; el corregido (4,3 × 10⁻⁶) es el defendible, y también rechaza H₀ |
+| Sesgo de selección declarado | La comparación usa los mismos datos del tuning y la grilla de TF-IDF (120) es mayor que la de Word2Vec (24) | *¿Eso no favorece a TF-IDF?* → Levemente; por eso el test apartado: F1 0,75 en test vs 0,74–0,76 en CV, no hubo inflación |
 
-**Resultado:** 0,748 vs 0,648 F1-macro, p ≈ 1,9 × 10⁻¹⁷ → TF-IDF + LogReg es mejor.
+**Resultado:** 0,759 vs 0,648 F1-macro; Wilcoxon p ≈ 1,2 × 10⁻¹⁷; t corregido p ≈ 4,3 × 10⁻⁶ → TF-IDF + LogReg es mejor.
 
 ## 8. Lectura de resultados
 
-- **Curvas de aprendizaje → alta varianza:** train ≈ 1, validación ≈ 0,73 y aún subiendo → más datos ayudarían.
-- **Matriz de confusión:** fallan Herramientas (F1 0,40) y Piel y cuerpo (0,50) por vocabulario compartido («mascarilla», «crema», «pinza», «lima»).
-- **AUC alto (0,97) con F1-macro menor (0,73):** el modelo ordena bien, pero el umbral argmax falla en clases chicas.
+- **Curvas de aprendizaje → alta varianza:** train ≈ 1, validación ≈ 0,74 y aún subiendo → más datos ayudarían.
+- **Matriz de confusión:** fallan Herramientas (F1 0,50) y Piel y cuerpo (0,50) por vocabulario compartido («mascarilla», «crema», «pinza», «lima»).
+- **AUC alto (0,97) con F1-macro menor (0,75):** el modelo ordena bien, pero el umbral argmax falla en clases chicas.
 - **t-SNE:** TF-IDF forma islas por línea de producto; Word2Vec mezcla más las clases.
 - **Por qué pierde Word2Vec:** las palabras sin vector son las marcas, que son lo más informativo.
 

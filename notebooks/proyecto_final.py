@@ -41,7 +41,7 @@ from wordcloud import WordCloud
 from catalogo import SEED
 from catalogo.data import find_root
 from catalogo.evaluation import (
-    classification_metrics, plot_learning_curve, plot_param_curve,
+    classification_metrics, corrected_resampled_ttest, plot_learning_curve, plot_param_curve,
     plot_roc_multiclass, plot_tsne, repeated_cv_scores, wilcoxon_test,
 )
 from catalogo.features import MeanEmbeddingVectorizer, tokenize, vocabulary_coverage
@@ -267,7 +267,7 @@ pipe_w2v = Pipeline([
 # | Técnica | Hiperparámetro | Valores | Por qué |
 # |---|---|---|---|
 # | TF-IDF + LogReg | `C = 1/λ` | 10⁻² … 10⁴ (10 valores log) | fuerza de la regularización L2; escala log porque su efecto es multiplicativo |
-# | | `k` de χ² | 250, 500, 1000, 2000, 3500 | cuántos n-gramas conservar; tope < 3 760, el mínimo de features por fold |
+# | | `k` de χ² | 250, 500, 1000, 2000, 3500, `all` | cuántos n-gramas conservar; `all` = sin selección, para medir si χ² aporta |
 # | | rango de n-gramas | (2, 4), (2, 5) | largo de los fragmentos de texto |
 # | Word2Vec + SVM | `C` | 10⁻² … 10³ (8 valores log) | penalización de errores del SVM |
 # | | `γ` | `scale`, 10⁻³, 10⁻² | ancho del kernel RBF |
@@ -278,7 +278,7 @@ pipe_w2v = Pipeline([
 cv_tune = RepeatedStratifiedKFold(n_splits=5, n_repeats=3, random_state=SEED)
 grid_tfidf = {
     "tfidf__ngram_range": [(2, 4), (2, 5)],
-    "chi2__k": [250, 500, 1000, 2000, 3500],  # < 3 760, el mínimo de features por fold
+    "chi2__k": [250, 500, 1000, 2000, 3500, "all"],  # "all" = sin selección, para comparar
     "clf__C": np.logspace(-2, 4, 10),  # C = 1/λ; hasta 10⁴ para que el óptimo no caiga en el borde
 }
 grid_w2v = {"clf__C": np.logspace(-2, 3, 8), "clf__gamma": ["scale", 1e-3, 1e-2]}
@@ -301,14 +301,17 @@ fig.savefig(FIG / "optimizacion.png", bbox_inches="tight")
 # - **C = 1/λ (LogReg).** Con C ≤ 0,05 (λ grande) el modelo está sobre-regularizado:
 #   F1-macro ≈ 0,06, predice una sola clase (**subajuste**). El desempeño sube hasta
 #   estabilizarse en C ≈ 5–500 y cae levemente en C = 10⁴ (λ casi cero: el modelo
-#   empieza a sobreajustar). Óptimo: **C ≈ 464**, F1-macro de validación ≈ 0,733. Que el
+#   empieza a sobreajustar). Óptimo: **C ≈ 464**, F1-macro de validación ≈ 0,739. Que el
 #   óptimo prefiera poca regularización es coherente con features muy distintivas.
 # - **C (SVM).** Mismo patrón; óptimo **C ≈ 7,2 con γ = 10⁻³**, F1-macro ≈ 0,640, con
 #   una meseta a la derecha.
-# - **k de χ².** El F1 sube de forma monótona con k: **descartar n-gramas empeora el
-#   modelo**. La selección no aporta acá porque la regresión logística regularizada ya
-#   asigna peso casi cero a los n-gramas irrelevantes. Es un resultado, no un error: se
-#   probó la selección y los datos dicen que conviene conservar casi todo.
+# - **k de χ².** El F1 sube de forma monótona con k (0,54 con k = 250 → 0,73 con
+#   k = 3500) y el mejor resultado es **sin selección** (línea roja, `all`: 0,739). La
+#   diferencia entre k = 3500 y `all` (0,009) es menor que la desviación estándar entre
+#   folds (≈ 0,04): **χ² no aporta**. La regresión logística regularizada ya asigna peso
+#   casi cero a los n-gramas irrelevantes. Es un resultado, no un error: se probó la
+#   selección contra la ausencia de selección y los datos dicen que conviene conservar
+#   todos los n-gramas.
 
 # %%
 fig, axes = plt.subplots(1, 2, figsize=(12, 4))
@@ -318,7 +321,7 @@ fig.savefig(FIG / "curvas_aprendizaje.png", bbox_inches="tight")
 
 # %% [markdown]
 # **Diagnóstico sesgo vs. varianza.** En ambas técnicas el F1 de entrenamiento es ≈ 1 y
-# el de validación queda muy por debajo (≈ 0,73 y ≈ 0,64), con una brecha grande:
+# el de validación queda muy por debajo (≈ 0,74 y ≈ 0,64), con una brecha grande:
 # **alta varianza**. La curva de validación **sigue subiendo** al llegar a 640 ejemplos y
 # no se ha estabilizado: **más datos etiquetados mejorarían el modelo**. Es la acción con
 # mejor retorno (más que cambiar de algoritmo), y es barata gracias al etiquetado
@@ -335,12 +338,19 @@ fig.savefig(FIG / "curvas_aprendizaje.png", bbox_inches="tight")
 # de scores (uno por modelo), el test es **pareado**: Wilcoxon de rangos con signo [4],
 # que no asume normalidad de las diferencias.
 #
-# - H₀: la mediana de las diferencias de F1-macro entre ambos modelos es 0.
-# - H₁: es distinta de 0. α = 0,05.
+# - H₀: las diferencias de F1-macro entre ambos modelos son simétricas alrededor de 0
+#   (ninguno es sistemáticamente mejor).
+# - H₁: no lo son. α = 0,05.
 #
-# **Limitación.** Los 100 scores no son independientes (los folds de distintas
-# repeticiones comparten datos), lo que hace al test optimista; con un p-value tan
-# pequeño como el que resulta, la conclusión no cambia.
+# **Limitaciones y cómo se tratan.** (1) Los 100 scores **no son independientes**: los
+# folds comparten datos, así que la varianza de las diferencias se subestima y el
+# p-value de Wilcoxon sale optimista. Por eso se reporta además el **t-test corregido de
+# Nadeau y Bengio** [8], que infla esa varianza por (1/J + n_test/n_train) y es el
+# estándar para comparar modelos con CV repetida. (2) La comparación usa los mismos 800
+# ejemplos con los que se optimizaron los hiperparámetros, y la grilla de TF-IDF (120
+# combinaciones) es más grande que la de Word2Vec (24): el sesgo de selección favorece
+# levemente a TF-IDF. El test de la sección siguiente, con 200 productos nunca vistos,
+# controla ese sesgo.
 
 # %%
 # Prompt (IA): «Compara los dos mejores modelos con repeated stratified 10x10 CV usando
@@ -351,16 +361,25 @@ scores = repeated_cv_scores(
     X_train, y_train, n_splits=N_SPLITS, n_repeats=N_REPEATS,
 )
 res = wilcoxon_test(scores, "TF-IDF + LogReg", "Word2Vec + SVM")
+n_test_fold = len(X_train) // N_SPLITS
+res_nb = corrected_resampled_ttest(
+    scores, "TF-IDF + LogReg", "Word2Vec + SVM", n_train=len(X_train) - n_test_fold, n_test=n_test_fold
+)
 fig, ax = plt.subplots(figsize=(6, 4))
 scores.boxplot(ax=ax)
 ax.set_ylabel("F1-macro por fold")
 fig.savefig(FIG / "comparacion.png", bbox_inches="tight")
-res
+print(f"F1-macro medio: TF-IDF + LogReg {res['media_a']:.3f} · Word2Vec + SVM {res['media_b']:.3f}")
+print(f"Wilcoxon: estadístico {res['estadistico']:.0f}, p = {res['p_value']:.2e}")
+print(f"t corregido (Nadeau–Bengio): t = {res_nb['t']:.2f}, p = {res_nb['p_value']:.2e}")
 
 # %% [markdown]
-# **Resultado.** F1-macro medio en los 100 folds: **0,748 (TF-IDF + LogReg)** contra
-# **0,648 (Word2Vec + SVM)**; Wilcoxon **p ≈ 1,9 × 10⁻¹⁷ < 0,05**. Se rechaza H₀: la
-# ventaja de TF-IDF + LogReg es estadísticamente significativa.
+# **Resultado.** F1-macro medio en los 100 folds: **0,759 (TF-IDF + LogReg)** contra
+# **0,648 (Word2Vec + SVM)**. Wilcoxon: **p ≈ 1,2 × 10⁻¹⁷**; t corregido de
+# Nadeau–Bengio: **t = 4,87, p ≈ 4,3 × 10⁻⁶**. Ambos < 0,05: se rechaza H₀ y la ventaja
+# de TF-IDF + LogReg es estadísticamente significativa. El p corregido es once órdenes de
+# magnitud mayor que el de Wilcoxon —eso es lo que cuesta la dependencia entre folds—,
+# pero la conclusión se mantiene.
 #
 # ### Métricas en el conjunto de test (200 productos nunca vistos)
 
@@ -384,12 +403,13 @@ ax.set_title("Matriz de confusión — TF-IDF + LogReg (test)")
 fig.savefig(FIG / "matriz_confusion.png", bbox_inches="tight")
 
 # %% [markdown]
-# **Lectura del test.** TF-IDF + LogReg: accuracy 0,82, F1-macro 0,73, F1-weighted 0,81,
-# AUC macro 0,97 y micro 0,98. La distancia entre F1-macro (0,73) y F1-weighted (0,81)
-# confirma que fallan las clases chicas:
+# **Lectura del test.** TF-IDF + LogReg: accuracy 0,825, F1-macro 0,75, F1-weighted 0,81,
+# AUC macro 0,97 y micro 0,98, muy cerca de lo estimado por validación cruzada (0,74–0,76):
+# el sesgo de selección de hiperparámetros no infló el resultado. La distancia entre
+# F1-macro (0,75) y F1-weighted (0,81) confirma que fallan las clases chicas:
 # - **Muy bien:** Coloración capilar (F1 0,96), Maquillaje (0,96), Uñas (0,89): tienen
 #   vocabulario y marcas propias.
-# - **Mal:** Herramientas y equipos de cabello (F1 0,40) y Piel y cuerpo (0,50). Las
+# - **Mal:** Herramientas y equipos de cabello (F1 0,50) y Piel y cuerpo (0,50). Las
 #   herramientas se confunden con Uñas (pinzas, limas, lámparas) y con Cuidado capilar;
 #   Piel y cuerpo se confunde con Cuidado capilar porque comparten palabras («mascarilla»,
 #   «crema», «aceite») que significan cosas distintas según sea para la cara o el cabello.
@@ -424,18 +444,21 @@ fig.savefig(FIG / "tsne.png", bbox_inches="tight")
 # | # | Qué se vio | Ajuste | Por qué |
 # |---|---|---|---|
 # | 1 | Los clústeres de k-means agrupaban por marca (silhouette 0,02–0,04) | Taxonomía por *para qué sirve* el producto, definida a mano | Un clustering por marca no sirve como categoría de negocio |
-# | 2 | La primera grilla de χ² llegaba a k = 5000, pero cada fold tiene entre 3 760 y 4 674 n-gramas | Grilla de k bajada a 250–3500 | k > n° de features equivale a «todas»: la selección quedaba sin evaluar |
+# | 2 | La primera grilla de χ² llegaba a k = 5000, pero cada fold tiene entre 3 760 y 4 674 n-gramas | Grilla de k bajada a 250–3500 | k > n° de features equivale a «todas» de forma implícita: la selección quedaba sin evaluar |
 # | 3 | Con la grilla de C hasta 10³, el óptimo de LogReg caía en el borde (C = 1000) | Grilla extendida hasta 10⁴ | Si el óptimo está en el borde no se sabe si hay uno mejor afuera; extendida, el óptimo (C ≈ 464) quedó en el interior |
-# | 4 | «Extensiones y accesorios de cabello» llegó a 28 ejemplos | Fusionada en «Otros» | Regla fijada *antes* de etiquetar (mínimo 30); completarla a mano rompería la aleatoriedad |
-# | 5 | `RocCurveDisplay` cambió su API en sklearn 1.7 | Curvas ROC con `roc_curve` + matplotlib | Que el notebook corra igual en local (sklearn 1.9) y en Colab |
-# | 6 | El 10 × 10 tardó menos de 1 minuto | Se mantuvo 10 × 10 (no se bajó a 5 × 2) | Es la configuración recomendada por la rúbrica y el costo era bajo |
+# | 4 | Con la grilla 250–3500, el mejor k cayó otra vez en el borde (3500): nunca se comparaba contra «sin selección» | Se agregó `all` a la grilla | Mismo criterio que con C; resultado: `all` es el mejor, χ² no aporta |
+# | 5 | Una revisión independiente señaló que el p de Wilcoxon es optimista (folds dependientes; mismos datos que el tuning) | Se agregó el t-test corregido de Nadeau–Bengio y se precisaron las limitaciones | El p corregido (≈ 4,3 × 10⁻⁶) es el defendible; la conclusión no cambia |
+# | 6 | «Extensiones y accesorios de cabello» llegó a 28 ejemplos | Fusionada en «Otros» | Regla fijada *antes* de etiquetar (mínimo 30); completarla a mano rompería la aleatoriedad |
+# | 7 | `RocCurveDisplay` cambió su API en sklearn 1.7 | Curvas ROC con `roc_curve` + matplotlib | Que el notebook corra igual en local (sklearn 1.9) y en Colab |
+# | 8 | El 10 × 10 tardó menos de 1 minuto | Se mantuvo 10 × 10 (no se bajó a 5 × 2) | Es la configuración recomendada por la rúbrica y el costo era bajo |
 
 # %% [markdown]
 # ## 10. Conclusiones
 #
 # 1. **TF-IDF de n-gramas de caracteres + regresión logística supera a Word2Vec
-#    preentrenado + SVM** en este problema, con diferencia significativa (F1-macro 0,748
-#    vs 0,648 en 10 × 10 CV; Wilcoxon p ≈ 1,9 × 10⁻¹⁷) y en test (F1-macro 0,73 vs 0,58).
+#    preentrenado + SVM** en este problema, con diferencia significativa (F1-macro 0,759
+#    vs 0,648 en 10 × 10 CV; t corregido p ≈ 4,3 × 10⁻⁶, Wilcoxon p ≈ 1,2 × 10⁻¹⁷) y en
+#    test (F1-macro 0,75 vs 0,58).
 # 2. **La causa es la representación, no el clasificador.** El conocimiento general del
 #    idioma que trae Word2Vec no compensa que desconozca las marcas, que son las palabras
 #    más informativas del catálogo (11,6 % de palabras sin vector, casi todas marcas), ni
@@ -447,8 +470,9 @@ fig.savefig(FIG / "tsne.png", bbox_inches="tight")
 #    cuerpo, Otros). Para usarlo en la tienda conviene aplicar el modelo con un umbral de
 #    confianza y mandar a revisión manual los casos dudosos, en vez de categorizar todo
 #    automáticamente.
-# 5. **χ² no mejoró el modelo**: con regresión logística regularizada conviene conservar
-#    casi todos los n-gramas.
+# 5. **χ² no mejoró el modelo**: el mejor resultado fue sin selección (0,739) y la
+#    diferencia con k = 3500 es menor que la variación entre folds. Con regresión
+#    logística regularizada conviene conservar todos los n-gramas.
 #
 # **Limitaciones:** una sola tienda; etiquetas de un solo revisor (sin acuerdo entre
 # anotadores); scores de CV repetida no independientes; la taxonomía es de esta tienda.
@@ -468,3 +492,5 @@ fig.savefig(FIG / "tsne.png", bbox_inches="tight")
 # [6] G. Salton and C. Buckley, "Term-weighting approaches in automatic text retrieval," *Inf. Process. Manage.*, vol. 24, no. 5, pp. 513–523, 1988.
 #
 # [7] Anthropic, "Claude," 2026. Asistente usado para proponer etiquetas y escribir código (prompts en las celdas correspondientes).
+#
+# [8] C. Nadeau and Y. Bengio, "Inference for the generalization error," *Mach. Learn.*, vol. 52, no. 3, pp. 239–281, 2003.

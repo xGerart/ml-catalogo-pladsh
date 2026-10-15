@@ -53,3 +53,27 @@ def test_graficos_no_fallan():
     plot_roc_multiclass(y, clf.predict_proba(X), clf.classes_, axes[2])
     plot_tsne(X, y, axes[3])
     plt.close(fig)
+
+
+def test_plot_param_curve_acepta_valores_no_numericos_como_referencia():
+    from sklearn.feature_selection import SelectKBest, f_classif
+    from sklearn.pipeline import Pipeline
+
+    pipe = Pipeline([("sel", SelectKBest(f_classif)), ("clf", LogisticRegression(max_iter=500))])
+    search = GridSearchCV(pipe, {"sel__k": [2, 4, "all"]}, cv=3, scoring="f1_macro").fit(X, y)
+    fig, ax = plt.subplots()
+    plot_param_curve(search, "sel__k", ax, log=False)
+    assert any(line.get_label() == "sel__k = all" for line in ax.get_lines())
+    plt.close(fig)
+
+
+def test_corrected_resampled_ttest_es_mas_conservador_que_sin_corregir():
+    from scipy.stats import ttest_rel
+
+    from catalogo.evaluation import corrected_resampled_ttest
+
+    scores = repeated_cv_scores(MODELS, X, y, n_splits=5, n_repeats=2)
+    res = corrected_resampled_ttest(scores, "logreg", "dummy", n_train=240, n_test=60)
+    naive = ttest_rel(scores["logreg"], scores["dummy"]).pvalue
+    assert res["p_value"] > naive
+    assert res["significativo"] and res["mejor"] == "logreg"

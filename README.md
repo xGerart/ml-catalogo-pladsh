@@ -14,13 +14,13 @@ contra **Word2Vec preentrenado + SVM**.
 
 | | TF-IDF + LogReg | Word2Vec + SVM |
 |---|---|---|
-| F1-macro, CV 10 × 10 (media) | **0,748** | 0,648 |
-| F1-macro, test | **0,734** | 0,582 |
-| Accuracy, test | **0,820** | 0,695 |
-| AUC macro, test | **0,970** | 0,910 |
+| F1-macro, CV 10 × 10 (media) | **0,759** | 0,648 |
+| F1-macro, test | **0,750** | 0,582 |
+| Accuracy, test | **0,825** | 0,695 |
+| AUC macro, test | **0,973** | 0,910 |
 
-Wilcoxon pareado sobre los 100 folds: **p ≈ 1,9 × 10⁻¹⁷** → la diferencia es
-significativa. Word2Vec pierde porque no tiene vector para las marcas, que son las
+Sobre los 100 folds: Wilcoxon **p ≈ 1,2 × 10⁻¹⁷** y t-test corregido de Nadeau–Bengio
+**p ≈ 4,3 × 10⁻⁶** → la diferencia es significativa. Word2Vec pierde porque no tiene vector para las marcas, que son las
 palabras más informativas del catálogo.
 
 ## Estructura
