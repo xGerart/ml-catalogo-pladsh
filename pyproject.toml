@@ -1,0 +1,21 @@
+[project]
+name = "catalogo"
+version = "0.1.0"
+description = "Categorización automática de un catálogo de retail a partir del nombre del producto"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.0",
+    "scikit-learn>=1.4",
+    "scipy>=1.11",
+    "matplotlib>=3.8",
+    "wordcloud>=1.9",
+    "openpyxl>=3.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "jupyter", "ipykernel", "jupytext>=1.16", "gensim>=4.3.3"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
