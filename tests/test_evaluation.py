@@ -88,3 +88,35 @@ def test_plot_param_curve_dibuja_entrenamiento_y_validacion():
     labels = [t.get_text() for t in ax.get_legend().get_texts()]
     assert "entrenamiento" in labels and "validación" in labels
     plt.close(fig)
+
+
+def test_plot_param_curve_como_error_contra_lambda():
+    search = GridSearchCV(
+        LogisticRegression(max_iter=500), {"C": [0.1, 1, 10]}, cv=3, scoring="f1_macro", return_train_score=True
+    ).fit(X, y)
+    fig, ax = plt.subplots()
+    plot_param_curve(search, "C", ax, as_error=True, x_transform=lambda c: 1 / c, x_label="λ = 1/C")
+    val = next(c for c in ax.containers if c.get_label() == "validación")
+    xs, ys = val.lines[0].get_data()
+    assert sorted(xs.tolist()) == [0.1, 1.0, 10.0]  # 1/C
+    best_c = search.best_params_["C"]
+    i = list(xs).index(1 / best_c)
+    assert abs(ys[i] - (1 - search.best_score_)) < 1e-12  # error = 1 − F1 de validación
+    assert ax.get_xlabel() == "λ = 1/C"
+    plt.close(fig)
+
+
+def test_plot_learning_curve_como_error():
+    fig, ax = plt.subplots()
+    plot_learning_curve(LogisticRegression(max_iter=500), X, y, StratifiedKFold(3), ax, as_error=True)
+    train = next(l for l in ax.get_lines() if l.get_label() == "entrenamiento")
+    assert all(0 <= v <= 1 for v in train.get_ydata())
+    assert "error" in ax.get_ylabel()
+    plt.close(fig)
+
+
+def test_plot_tsne_devuelve_las_coordenadas_2d():
+    fig, ax = plt.subplots()
+    emb = plot_tsne(X, y, ax)
+    assert emb.shape == (len(X), 2)
+    plt.close(fig)

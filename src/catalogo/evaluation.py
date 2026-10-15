@@ -82,50 +82,61 @@ def classification_metrics(y_true, y_pred, y_proba, classes) -> dict:
     }
 
 
-def plot_param_curve(search, param: str, ax, log: bool = True, label: str | None = None):
-    """F1 de entrenamiento y de validación (media ± std) vs. un hiperparámetro.
+def plot_param_curve(search, param: str, ax, log: bool = True, label: str | None = None,
+                     as_error: bool = False, x_transform=None, x_label: str | None = None):
+    """Score (o error) de entrenamiento y de validación (media ± std) vs. un hiperparámetro.
 
     Los demás hiperparámetros se fijan en su mejor valor. La curva de entrenamiento solo
     aparece si el GridSearchCV se corrió con return_train_score=True. Valores no
     numéricos de la grilla (p. ej. k="all") se dibujan como líneas horizontales.
+
+    as_error=True grafica 1 − score (con F1, el error); x_transform permite graficar, por
+    ejemplo, λ = 1/C en vez de C, para leer la curva como en la teoría (Loss vs. λ).
     """
     res = pd.DataFrame(search.cv_results_)
     key = f"param_{param}"
     for other, best in search.best_params_.items():
         if other != param:
             res = res[res[f"param_{other}"].astype(str) == str(best)]
+    tx = x_transform or (lambda v: v)
+    ty = (lambda v: 1 - v) if as_error else (lambda v: v)
     numeric = pd.to_numeric(res[key], errors="coerce")
-    num = res[numeric.notna()].assign(_x=numeric[numeric.notna()]).sort_values("_x")
+    num = res[numeric.notna()].assign(_x=tx(numeric[numeric.notna()].astype(float))).sort_values("_x")
     series = [("validación", "test", "tab:orange")]
     if "mean_train_score" in res:
         series.insert(0, ("entrenamiento", "train", "tab:blue"))
     for nombre, split, color in series:
-        ax.errorbar(num["_x"], num[f"mean_{split}_score"], yerr=num[f"std_{split}_score"],
+        ax.errorbar(num["_x"], ty(num[f"mean_{split}_score"]), yerr=num[f"std_{split}_score"],
                     marker="o", capsize=3, color=color, label=nombre)
         for _, row in res[numeric.isna()].iterrows():
-            ax.axhline(row[f"mean_{split}_score"], ls=":", color=color, label=f"{nombre} ({param} = {row[key]})")
+            ax.axhline(ty(row[f"mean_{split}_score"]), ls=":", color=color, label=f"{nombre} ({param} = {row[key]})")
     if log:
         ax.set_xscale("log")
     best = search.best_params_[param]
     if pd.notna(pd.to_numeric(best, errors="coerce")):
-        ax.axvline(float(best), ls="--", c="grey", label="óptimo")
-    ax.set_xlabel(param)
-    ax.set_ylabel(str(search.scoring))
+        ax.axvline(float(tx(float(best))), ls="--", c="grey", label="óptimo")
+    ax.set_xlabel(x_label or param)
+    metric = str(search.scoring)
+    ax.set_ylabel(f"error = 1 − {metric}" if as_error else metric)
     ax.legend(fontsize=8)
 
 
-def plot_learning_curve(estimator, X, y, cv, ax, scoring="f1_macro", title=""):
+def plot_learning_curve(estimator, X, y, cv, ax, scoring="f1_macro", title="", as_error: bool = False):
+    """Curva de aprendizaje: score (o error = 1 − score) de entrenamiento y validación vs. m."""
     sizes, train, val = learning_curve(
         estimator, X, y, cv=cv, scoring=scoring, n_jobs=-1, train_sizes=np.linspace(0.1, 1.0, 6)
     )
+    if as_error:
+        train, val = 1 - train, 1 - val
     for scores, name in ((train, "entrenamiento"), (val, "validación")):
         m, s = scores.mean(axis=1), scores.std(axis=1)
         ax.plot(sizes, m, marker="o", label=name)
         ax.fill_between(sizes, m - s, m + s, alpha=0.2)
-    ax.set_xlabel("ejemplos de entrenamiento")
-    ax.set_ylabel(scoring)
+    ax.set_xlabel("m (ejemplos de entrenamiento)")
+    ax.set_ylabel(f"error = 1 − {scoring}" if as_error else scoring)
     ax.set_title(title)
     ax.legend()
+    return sizes, train.mean(axis=1), val.mean(axis=1)
 
 
 def plot_roc_multiclass(y_true, y_proba, classes, ax, title=""):
@@ -148,6 +159,7 @@ def plot_roc_multiclass(y_true, y_proba, classes, ax, title=""):
 
 
 def plot_tsne(X, labels, ax, title="", seed=SEED):
+    """t-SNE 2D coloreado por etiqueta; devuelve las coordenadas para poder anotar puntos."""
     X = X.toarray() if hasattr(X, "toarray") else np.asarray(X)
     emb = TSNE(n_components=2, random_state=seed, init="pca", perplexity=30).fit_transform(X)
     labels = np.asarray(labels)
@@ -158,3 +170,4 @@ def plot_tsne(X, labels, ax, title="", seed=SEED):
     ax.set_xticks([])
     ax.set_yticks([])
     ax.legend(markerscale=2, fontsize=7)
+    return emb

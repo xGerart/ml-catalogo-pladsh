@@ -33,6 +33,7 @@ from sklearn.model_selection import (
 from sklearn.base import clone
 from sklearn.decomposition import TruncatedSVD
 from sklearn.manifold import TSNE
+from sklearn.neighbors import NearestNeighbors
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
@@ -88,6 +89,7 @@ np.random.seed(SEED)
 # genera `scripts/diagrama_flujo.py` (SVG), exportado a PNG para que se vea en Colab.
 
 # %%
+# Prompt (IA): «Muestra el diagrama de flujo del proyecto en el notebook de forma que se vea en Colab.»
 # Se muestra en PNG: Colab no siempre renderiza salidas SVG. El SVG fuente está en el
 # mismo directorio (el README lo usa) y el PNG se exporta de él con un navegador.
 from IPython.display import Image, display
@@ -95,6 +97,7 @@ from IPython.display import Image, display
 display(Image(filename=str(ROOT / "reports/figures/diagrama_flujo.png"), width=900))
 
 # %%
+# Prompt (IA): «Carga el dataset etiquetado y el resumen de la revisión del etiquetado.»
 df = load_labeled(ROOT / "data/processed/productos_etiquetados.csv")
 resumen = json.loads((ROOT / "etiquetado/resumen.json").read_text())
 resumen
@@ -119,7 +122,7 @@ resumen
 # (`etiquetado/taxonomia.md`). Ese mismo hallazgo justifica un modelo supervisado.
 #
 # **Muestra y etiquetado asistido.** 1 000 productos al azar (semilla 42) del catálogo
-# deduplicado. Un LLM propuso una etiqueta por producto con un prompt fijo
+# deduplicado. Un LLM (Claude [7]) propuso una etiqueta por producto con un prompt fijo
 # (`etiquetado/prompt_etiquetado.md`, reproducido abajo) y el autor revisó las 1 000 en
 # una planilla: **corrigió 4 (0,4 %)**, todas cosmetiqueras y maletines que pasaron de
 # «Otros» a «Maquillaje».
@@ -133,12 +136,17 @@ resumen
 # el mínimo de 30 fijado antes de etiquetar, y se fusionó en «Otros». Quedan **8 clases**.
 
 # %%
+# Prompt (IA): «Muestra el prompt con el que se propusieron las etiquetas.»
 print((ROOT / "etiquetado/prompt_etiquetado.md").read_text())
 
 # %% [markdown]
 # ## 3. Análisis exploratorio (EDA)
+#
+# Los datos se manejan con pandas [10] y NumPy [9]; los gráficos, con matplotlib [12] y
+# wordcloud [14].
 
 # %%
+# Prompt (IA): «Grafica el balance de clases del dataset etiquetado.»
 fig, ax = plt.subplots(figsize=(8, 4))
 df["etiqueta"].value_counts().plot.barh(ax=ax)
 ax.set_title("Balance de clases")
@@ -153,6 +161,7 @@ fig.savefig(FIG / "balance.png", bbox_inches="tight")
 # son **estratificados**, para que cada fold conserve la proporción de clases.
 
 # %%
+# Prompt (IA): «Calcula y grafica la distribución del largo de los nombres con su skewness.»
 largo = df["nombre"].str.split().str.len()
 print(f"Palabras por nombre: media {largo.mean():.2f}, mediana {largo.median()}, skewness {largo.skew():.2f}")
 fig, ax = plt.subplots(figsize=(6, 3))
@@ -170,6 +179,7 @@ fig.savefig(FIG / "largo_nombres.png", bbox_inches="tight")
 # **¿Estacionalidad?** No aplica: no es una serie de tiempo.
 
 # %%
+# Prompt (IA): «Genera un word cloud con las palabras de los nombres de producto.»
 fig, ax = plt.subplots(figsize=(10, 5))
 wc = WordCloud(width=1000, height=500, background_color="white", random_state=SEED)
 ax.imshow(wc.generate(" ".join(t for n in df["nombre"] for t in tokenize(n))))
@@ -177,6 +187,7 @@ ax.axis("off")
 fig.savefig(FIG / "wordcloud.png", bbox_inches="tight")
 
 # %%
+# Prompt (IA): «Muestra las palabras más frecuentes de cada categoría en una tabla.»
 top = {
     cat: Counter(t for n in grupo["nombre"] for t in tokenize(n)).most_common(8)
     for cat, grupo in df.groupby("etiqueta")
@@ -191,6 +202,7 @@ pd.DataFrame({c: [f"{w} ({n})" for w, n in ws] for c, ws in top.items()})
 # solo por aparecer en muchos documentos.
 
 # %%
+# Prompt (IA): «Mide qué porcentaje de las palabras del dataset no tiene vector en el Word2Vec preentrenado.»
 words = set(np.load(W2V)["words"].tolist())
 cov = vocabulary_coverage(df["nombre"].tolist(), words)
 cov
@@ -205,7 +217,7 @@ cov
 # %% [markdown]
 # ## 4. Feature extraction
 #
-# **Técnica 1 — TF-IDF de n-gramas de caracteres** (opción 1 de la rúbrica). Se usan
+# **Técnica 1 — TF-IDF de n-gramas de caracteres** [6] (opción 1 de la rúbrica). Se usan
 # n-gramas de *caracteres* (`char_wb`) y no de palabras porque los nombres están llenos
 # de abreviaturas y errores de tipeo: «ESM», «ESMALTE», «ESAMALTE» y «ESMALETE» comparten
 # los fragmentos «esm» y «sma», mientras que como palabras serían cuatro features sin
@@ -216,10 +228,11 @@ cov
 # [1], entrenados con Word2Vec [2]. El vector de un producto es el **promedio** de los
 # vectores de sus palabras. Ventaja esperada: semejanza semántica («mascarilla» cerca de
 # «tratamiento») aunque no compartan letras. Como el modelo completo pesa 1,1 GB, se
-# recortó al vocabulario del catálogo (`scripts/extraer_vocab_w2v.py`, con verificación
+# recortó al vocabulario del catálogo con gensim [13] (`scripts/extraer_vocab_w2v.py`, con verificación
 # SHA-256 del archivo descargado).
 
 # %%
+# Prompt (IA): «Muestra los vecinos más cercanos de algunas palabras en el espacio Word2Vec.»
 # Vecinos más cercanos en el espacio Word2Vec: muestran qué "sabe" el modelo preentrenado.
 data = np.load(W2V)
 vocab, V = data["words"].tolist(), data["vectors"]
@@ -243,6 +256,7 @@ pd.DataFrame({
 # de baja dimensión (300), como admite la rúbrica para transfer learning.
 
 # %%
+# Prompt (IA): «Separa 80/20 estratificado con semilla fija; el test no se toca hasta el final.»
 X_train, X_test, y_train, y_test = train_test_split(
     df["nombre"], df["etiqueta"], test_size=0.2, stratify=df["etiqueta"], random_state=SEED
 )
@@ -255,7 +269,7 @@ len(X_train), len(X_test)
 #
 # ## 6. Pipelines
 #
-# Cada técnica es un `Pipeline` de sklearn: la extracción de features se ajusta **dentro
+# Cada técnica es un `Pipeline` de sklearn [3], [18]: la extracción de features se ajusta **dentro
 # de cada fold** de la validación cruzada. Si TF-IDF o χ² se ajustaran con todos los
 # datos antes de la CV, verían los folds de validación (data leakage).
 
@@ -277,7 +291,7 @@ pipe_w2v = Pipeline([
 # %% [markdown]
 # ## 7. Optimización de hiperparámetros
 #
-# Búsqueda en grilla con **repeated stratified k-fold (5 folds × 3 repeticiones)** sobre
+# Búsqueda en grilla con **repeated stratified k-fold (5 folds × 3 repeticiones)** [15] sobre
 # el 80 % de entrenamiento, métrica F1-macro. Se usan 5 folds (y no 10) para el *tuning*
 # porque cada combinación de la grilla se entrena 15 veces; las 10 × 10 se reservan para
 # la comparación final. No se usa nested CV, como recomienda la rúbrica.
@@ -311,51 +325,70 @@ search_w2v = GridSearchCV(
 search_tfidf.best_params_, search_tfidf.best_score_, search_w2v.best_params_, search_w2v.best_score_
 
 # %%
-fig, axes = plt.subplots(1, 3, figsize=(17, 4.5), layout="constrained")
-plot_param_curve(search_tfidf, "clf__C", axes[0])
-axes[0].set_title("TF-IDF + LogReg: C = 1/λ")
-plot_param_curve(search_w2v, "clf__C", axes[1])
-axes[1].set_title("Word2Vec + SVM: C")
-plot_param_curve(search_tfidf, "chi2__k", axes[2], log=False)
-axes[2].set_title("TF-IDF: k de χ²")
+# Prompt (IA): «Grafica la optimización como en la teoría del curso: error = 1 − F1-macro
+# de entrenamiento y validación contra λ = 1/C, marcando sobreajuste, subajuste y óptimo.»
+def marcar_regiones(ax):
+    ax.text(0.02, 0.97, "sobreajuste\n(varianza alta)", transform=ax.transAxes, va="top", fontsize=9, color="tab:red")
+    ax.text(0.98, 0.5, "subajuste\n(sesgo alto)", transform=ax.transAxes, va="center", ha="right", fontsize=9, color="tab:red")
+
+
+fig, axes = plt.subplots(1, 3, figsize=(17, 4.8), layout="constrained")
+plot_param_curve(search_tfidf, "clf__C", axes[0], as_error=True, x_transform=lambda c: 1 / c, x_label="λ = 1/C")
+axes[0].set_title("TF-IDF + LogReg: regularización λ")
+marcar_regiones(axes[0])
+plot_param_curve(search_w2v, "clf__C", axes[1], as_error=True, x_transform=lambda c: 1 / c, x_label="λ = 1/C")
+axes[1].set_title("Word2Vec + SVM: regularización λ")
+marcar_regiones(axes[1])
+plot_param_curve(search_tfidf, "chi2__k", axes[2], log=False, as_error=True, x_label="k (n-gramas conservados por χ²)")
+axes[2].set_title("TF-IDF: selección de features k")
 fig.savefig(FIG / "optimizacion.png", bbox_inches="tight")
 
 # %% [markdown]
-# **Lectura de la optimización.** Cada gráfica muestra el F1-macro de **entrenamiento**
-# (azul) y de **validación** (naranja), promediados sobre los 15 folds de la CV 5 × 3; las
-# barras son ± una desviación estándar. El hiperparámetro se elige por la curva de
-# **validación**, nunca por la de entrenamiento.
-# - **C = 1/λ (LogReg).** Con C ≤ 0,05 (λ grande) ambas curvas están juntas y bajas
-#   (F1 ≈ 0,06: predice una sola clase): **subajuste**, sesgo alto. Al subir C, las dos
-#   suben; desde C ≈ 5 el entrenamiento llega a 1,0 mientras la validación se estabiliza en
-#   ≈ 0,73 y cae levemente en C = 10⁴: la brecha entre ambas es **varianza**. El óptimo de
-#   validación es **C ≈ 464** (F1 ≈ 0,739), en el interior de la grilla.
-# - **C (SVM).** Mismo patrón: subajuste con C chico, entrenamiento ≈ 1 con C grande.
-#   Óptimo de validación **C ≈ 7,2 con γ = 10⁻³** (F1 ≈ 0,640); más allá la validación
-#   queda plana.
-# - **k de χ².** Con pocos n-gramas (k = 250) el modelo subajusta (entrenamiento 0,74,
-#   validación 0,54). Al crecer k ambas suben; el entrenamiento llega a 1,0 en k ≈ 2000,
-#   pero la validación **sigue subiendo** hasta el mejor resultado, **sin selección** (líneas
-#   punteadas, `all`: 0,739). La diferencia con k = 3500 (0,009) es menor que la
-#   desviación entre folds (≈ 0,04): **χ² no aporta**. La regresión logística regularizada
-#   ya asigna peso casi cero a los n-gramas irrelevantes. Es un resultado, no un error: se
-#   comparó la selección contra no seleccionar y los datos dicen que conviene conservar
-#   todos los n-gramas.
+# **Lectura de la optimización.** Se grafica el **error = 1 − F1-macro** de
+# **entrenamiento** (azul) y de **validación** (naranja) contra la fuerza de la
+# regularización **λ = 1/C**, igual que la curva *Loss vs. λ* de la teoría. Cada punto es
+# el promedio de los 15 folds de la CV 5 × 3 y las barras son ± una desviación estándar.
+# El hiperparámetro se elige donde el **error de validación es mínimo**, nunca mirando el
+# de entrenamiento.
+# - **λ (LogReg).** A la derecha (λ ≥ 20, regularización fuerte) ambos errores son altos
+#   y casi iguales (≈ 0,94: el modelo predice una sola clase): **subajuste**, sesgo alto.
+#   Al bajar λ, ambos bajan. A la izquierda (λ ≤ 0,2) el error de entrenamiento llega a 0
+#   y el de validación se queda en ≈ 0,26 y vuelve a subir levemente en λ = 10⁻⁴: la
+#   brecha entre ambos es **sobreajuste**, varianza alta. El óptimo de validación es
+#   **λ ≈ 0,002 (C ≈ 464)**, con error ≈ 0,261 (F1 ≈ 0,739), en el interior de la grilla.
+# - **λ (SVM).** Mismo patrón. Óptimo **λ ≈ 0,14 (C ≈ 7,2) con γ = 10⁻³**, error ≈ 0,360
+#   (F1 ≈ 0,640); con menos regularización el error de validación queda plano.
+# - **k de χ².** Con pocos n-gramas (k = 250) el modelo subajusta: error de
+#   entrenamiento 0,26 y de validación 0,46. Al crecer k ambos bajan; el de entrenamiento
+#   llega a 0 en k ≈ 2000, pero el de validación **sigue bajando** hasta el mejor
+#   resultado, **sin selección** (líneas punteadas, `all`: error 0,261). La diferencia con
+#   k = 3500 (0,009) es menor que la desviación entre folds (≈ 0,04): **χ² no aporta**.
+#   La regresión logística regularizada ya asigna peso casi cero a los n-gramas
+#   irrelevantes. Es un resultado, no un error: se comparó la selección contra no
+#   seleccionar y los datos dicen que conviene conservar todos los n-gramas.
 
 # %%
-fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-plot_learning_curve(search_tfidf.best_estimator_, X_train, y_train, cv_tune, axes[0], title="TF-IDF + LogReg")
-plot_learning_curve(search_w2v.best_estimator_, X_train, y_train, cv_tune, axes[1], title="Word2Vec + SVM")
+# Prompt (IA): «Grafica las curvas de aprendizaje como error contra m (tamaño del
+# entrenamiento) para ambas técnicas, marcando la brecha entre entrenamiento y validación.»
+fig, axes = plt.subplots(1, 2, figsize=(13, 4.5), layout="constrained")
+for ax, (nombre, search) in zip(axes, [("TF-IDF + LogReg", search_tfidf), ("Word2Vec + SVM", search_w2v)]):
+    m, err_train, err_val = plot_learning_curve(
+        search.best_estimator_, X_train, y_train, cv_tune, ax, title=nombre, as_error=True
+    )
+    ax.annotate("", xy=(m[-1], err_train[-1]), xytext=(m[-1], err_val[-1]),
+                arrowprops=dict(arrowstyle="<->", color="black"))
+    ax.text(m[-1] * 0.97, (err_train[-1] + err_val[-1]) / 2, "brecha\n(varianza)", ha="right", va="center", fontsize=9)
 fig.savefig(FIG / "curvas_aprendizaje.png", bbox_inches="tight")
 
 # %% [markdown]
-# **Diagnóstico sesgo vs. varianza.** En ambas técnicas el F1 de entrenamiento es ≈ 1 y
-# el de validación queda muy por debajo (≈ 0,74 y ≈ 0,64), con una brecha grande:
-# **alta varianza**. La curva de validación **sigue subiendo** al llegar a 640 ejemplos y
-# no se ha estabilizado: **más datos etiquetados mejorarían el modelo**. Es la acción con
-# mejor retorno (más que cambiar de algoritmo), y es barata gracias al etiquetado
-# asistido. Word2Vec + SVM además tiene un techo más bajo: su problema no es solo de
-# varianza sino de representación (no conoce las marcas).
+# **Diagnóstico sesgo vs. varianza** (curvas con `learning_curve` [16]). Igual que la curva *high variance* de la teoría: en
+# ambas técnicas el error de entrenamiento es ≈ 0 y el de validación queda muy por
+# encima (≈ 0,26 y ≈ 0,36), con una **brecha** grande: **alta varianza**. El error de
+# validación **sigue bajando** al llegar a 640 ejemplos y no se ha estabilizado: **más
+# datos etiquetados mejorarían el modelo**. Es la acción con mejor retorno (más que
+# cambiar de algoritmo), y es barata gracias al etiquetado asistido. Word2Vec + SVM
+# además tiene un piso de error más alto: su problema no es solo de varianza sino de
+# representación (no conoce las marcas).
 
 # %% [markdown]
 # ## 8. Comparación estadística: Wilcoxon sobre repeated stratified 10 × 10 CV
@@ -365,7 +398,7 @@ fig.savefig(FIG / "curvas_aprendizaje.png", bbox_inches="tight")
 # validación **estratificada** porque las clases están desbalanceadas: un fold sin
 # ejemplos de «Herramientas» daría un F1-macro sin sentido. Como cada fold produce un par
 # de scores (uno por modelo), el test es **pareado**: Wilcoxon de rangos con signo [4],
-# que no asume normalidad de las diferencias.
+# que no asume normalidad de las diferencias (implementación de SciPy [11], [17]).
 #
 # - H₀: las diferencias de F1-macro entre ambos modelos son simétricas alrededor de 0
 #   (ninguno es sistemáticamente mejor).
@@ -413,6 +446,7 @@ print(f"t corregido (Nadeau–Bengio): t = {res_nb['t']:.2f}, p = {res_nb['p_val
 # ### Métricas en el conjunto de test (200 productos nunca vistos)
 
 # %%
+# Prompt (IA): «Calcula en el test todas las métricas de la rúbrica para ambos modelos y grafica la curva ROC multiclase.»
 filas = {}
 fig, axes = plt.subplots(1, 2, figsize=(14, 6))
 for ax, (name, search) in zip(axes, [("TF-IDF + LogReg", search_tfidf), ("Word2Vec + SVM", search_w2v)]):
@@ -424,6 +458,7 @@ fig.savefig(FIG / "roc.png", bbox_inches="tight")
 pd.DataFrame(filas).round(3)
 
 # %%
+# Prompt (IA): «Muestra el reporte por clase y la matriz de confusión del mejor modelo en el test.»
 best = search_tfidf.best_estimator_
 print(classification_report(y_test, best.predict(X_test), digits=2))
 fig, ax = plt.subplots(figsize=(9, 8))
@@ -449,16 +484,42 @@ fig.savefig(FIG / "matriz_confusion.png", bbox_inches="tight")
 # ## 9. Visualización con t-SNE (color = categoría)
 
 # %%
-fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+# Prompt (IA): «Visualiza con t-SNE los dos espacios de features coloreados por la
+# etiqueta y anota en el de TF-IDF el nombre de algunos productos: uno típico de varias
+# islas y uno de la zona mezclada.»
+fig, axes = plt.subplots(1, 2, figsize=(16, 7), layout="constrained")
 X_tfidf = search_tfidf.best_estimator_[:-1].transform(df["nombre"])
 X_w2v = search_w2v.best_estimator_[:-1].transform(df["nombre"])
-plot_tsne(X_tfidf, df["etiqueta"], axes[0], title="Espacio TF-IDF (+χ²)")
+emb_tfidf = plot_tsne(X_tfidf, df["etiqueta"], axes[0], title="Espacio TF-IDF (+χ²)")
 plot_tsne(X_w2v, df["etiqueta"], axes[1], title="Espacio Word2Vec")
+
+# Producto "típico" de una clase: el que tiene más vecinos de su misma clase en el mapa.
+# Producto "ambiguo": el que tiene menos vecinos de su clase.
+vecinos = NearestNeighbors(n_neighbors=11).fit(emb_tfidf).kneighbors(emb_tfidf, return_distance=False)[:, 1:]
+etiquetas = df["etiqueta"].to_numpy()
+pureza = (etiquetas[vecinos] == etiquetas[:, None]).mean(axis=1)
+elegidos = [
+    int(np.flatnonzero(etiquetas == c)[pureza[etiquetas == c].argmax()])
+    for c in ["Coloración capilar", "Uñas", "Maquillaje", "Pestañas y cejas"]
+]
+elegidos.append(int(np.flatnonzero(etiquetas == "Piel y cuerpo")[pureza[etiquetas == "Piel y cuerpo"].argmin()]))
+desplazamientos = [(15, 15), (15, 15), (15, 25), (15, 15), (20, -30)]
+for idx, offset in zip(elegidos, desplazamientos):
+    x, y_ = emb_tfidf[idx]
+    nombre = df["nombre"].iloc[idx]
+    axes[0].annotate(
+        nombre[:30] + ("…" if len(nombre) > 30 else ""), xy=(x, y_), xytext=offset, textcoords="offset points",
+        fontsize=8, bbox=dict(boxstyle="round,pad=0.2", fc="white", alpha=0.85),
+        arrowprops=dict(arrowstyle="-", color="black", lw=0.8),
+    )
 fig.savefig(FIG / "tsne.png", bbox_inches="tight")
 
 # %% [markdown]
 # **Lectura.** En el espacio TF-IDF aparecen **islas compactas y de un solo color**
-# (líneas de producto como los tintes de una marca o los esmaltes de otra), mientras
+# (líneas de producto como los tintes de una marca o los esmaltes de otra; los nombres
+# anotados son productos típicos de cada isla). La anotación de «Piel y cuerpo» muestra
+# un caso ambiguo: «B.CREAT.SK CREMA ANTIEDAD…» es una crema de una marca de maquillaje
+# (Beauty Creations), y por la marca cae en la zona de Maquillaje. Mientras tanto,
 # «Otros», «Herramientas» y «Piel y cuerpo» quedan dispersas en el centro, mezcladas: es
 # la misma confusión que muestra la matriz. En el espacio Word2Vec las clases se
 # solapan mucho más; solo «Uñas» y parte de «Cuidado capilar» forman regiones propias.
@@ -480,6 +541,7 @@ fig.savefig(FIG / "tsne.png", bbox_inches="tight")
 # modelo cuando su confianza supera cada umbral.
 
 # %%
+# Prompt (IA): «Elige el umbral de confianza con predicciones out-of-fold del entrenamiento, sin usar el test.»
 best = search_tfidf.best_estimator_
 proba_oof = cross_val_predict(
     best, X_train, y_train, cv=StratifiedKFold(5, shuffle=True, random_state=SEED),
@@ -498,6 +560,7 @@ pd.DataFrame([
 ])
 
 # %%
+# Prompt (IA): «Confirma en el test el umbral elegido y aplica el modelo final al resto del catálogo.»
 # Confirmación en el test (200 productos nunca vistos) con el umbral elegido.
 UMBRAL = 0.8
 proba_test = best.predict_proba(X_test)
@@ -507,6 +570,7 @@ print(f"Test con confianza ≥ {UMBRAL}: {100 * (conf_test >= UMBRAL).mean():.1f
       f"accuracy {acierto_test[conf_test >= UMBRAL].mean():.3f}")
 
 # %%
+# Prompt (IA): «Aplica el modelo final reentrenado al catálogo restante y grafica confianza y predicciones por categoría.»
 catalogo = pd.read_csv(ROOT / "data/processed/catalogo_sin_etiquetar.csv")
 # Modelo final: mismos hiperparámetros, reentrenado con los 1 000 productos etiquetados.
 modelo_final = clone(best).fit(df["nombre"], df["etiqueta"])
@@ -529,6 +593,7 @@ fig.savefig(FIG / "catalogo_completo.png", bbox_inches="tight")
 catalogo["revision"].value_counts()
 
 # %%
+# Prompt (IA): «Dibuja un mapa t-SNE del catálogo completo coloreado por categoría predicha y por confianza.»
 # Mapa del catálogo: TF-IDF → SVD (50 dims) → t-SNE. SVD primero porque t-SNE sobre miles
 # de features dispersas es lento y pesado en memoria; es la práctica habitual.
 X_cat = modelo_final[:-1].transform(catalogo["nombre"])
@@ -562,6 +627,7 @@ fig.savefig(FIG / "catalogo_tsne.png", bbox_inches="tight")
 # confianza: las islas son amarillas (confianza ≈ 1) y las zonas mezcladas, oscuras.
 
 # %%
+# Prompt (IA): «Muestra los productos más representativos que el modelo asignó a cada categoría.»
 # Ejemplos por categoría: los 3 productos con mayor confianza en cada una.
 ejemplos = (
     catalogo[catalogo["revision"] == "automática"]
@@ -573,6 +639,7 @@ ejemplos = (
 ejemplos[["prediccion", "nombre", "confianza"]].round(3).reset_index(drop=True)
 
 # %%
+# Prompt (IA): «Muestra las predicciones más seguras y las más dudosas del catálogo.»
 # Ejemplos: las predicciones más seguras y las más dudosas.
 cols = ["nombre", "prediccion", "confianza"]
 pd.concat({
@@ -581,6 +648,7 @@ pd.concat({
 }, axis=1).round(2)
 
 # %%
+# Prompt (IA): «Compara las predicciones con las categorías que la tienda ya tenía en el ERP, con un mapa de calor.»
 # Validación externa: productos que el personal de la tienda ya había categorizado en el
 # ERP (todas categorías capilares). El modelo nunca vio esas etiquetas.
 CAPILARES = {"Cuidado capilar", "Coloración capilar"}
@@ -684,3 +752,23 @@ fig.savefig(FIG / "validacion_erp.png", bbox_inches="tight")
 # [7] Anthropic, "Claude," 2026. Asistente usado para proponer etiquetas y escribir código (prompts en las celdas correspondientes).
 #
 # [8] C. Nadeau and Y. Bengio, "Inference for the generalization error," *Mach. Learn.*, vol. 52, no. 3, pp. 239–281, 2003.
+#
+# [9] C. R. Harris *et al.*, "Array programming with NumPy," *Nature*, vol. 585, pp. 357–362, 2020.
+#
+# [10] W. McKinney, "Data structures for statistical computing in Python," in *Proc. 9th Python in Science Conf.*, 2010, pp. 56–61.
+#
+# [11] P. Virtanen *et al.*, "SciPy 1.0: Fundamental algorithms for scientific computing in Python," *Nature Methods*, vol. 17, pp. 261–272, 2020.
+#
+# [12] J. D. Hunter, "Matplotlib: A 2D graphics environment," *Comput. Sci. Eng.*, vol. 9, no. 3, pp. 90–95, 2007.
+#
+# [13] R. Řehůřek and P. Sojka, "Software framework for topic modelling with large corpora," in *Proc. LREC 2010 Workshop on New Challenges for NLP Frameworks*, 2010, pp. 45–50.
+#
+# [14] A. Mueller, "WordCloud for Python," 2023. [Online]. Available: https://github.com/amueller/word_cloud
+#
+# [15] scikit-learn developers, "sklearn.model_selection.RepeatedStratifiedKFold." [Online]. Available: https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.RepeatedStratifiedKFold.html
+#
+# [16] scikit-learn developers, "sklearn.model_selection.learning_curve." [Online]. Available: https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.learning_curve.html
+#
+# [17] SciPy developers, "scipy.stats.wilcoxon." [Online]. Available: https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.wilcoxon.html
+#
+# [18] scikit-learn developers, "Pipelines and composite estimators." [Online]. Available: https://scikit-learn.org/stable/modules/compose.html
