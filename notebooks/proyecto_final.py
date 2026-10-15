@@ -36,6 +36,8 @@ from sklearn.model_selection import (
     GridSearchCV, RepeatedStratifiedKFold, StratifiedKFold, cross_val_predict, train_test_split,
 )
 from sklearn.base import clone
+from sklearn.decomposition import TruncatedSVD
+from sklearn.manifold import TSNE
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
@@ -505,6 +507,50 @@ fig.savefig(FIG / "catalogo_completo.png", bbox_inches="tight")
 catalogo["revision"].value_counts()
 
 # %%
+# Mapa del catálogo: TF-IDF → SVD (50 dims) → t-SNE. SVD primero porque t-SNE sobre miles
+# de features dispersas es lento y pesado en memoria; es la práctica habitual.
+X_cat = modelo_final[:-1].transform(catalogo["nombre"])
+emb = TSNE(n_components=2, random_state=SEED, init="pca", perplexity=40).fit_transform(
+    TruncatedSVD(n_components=50, random_state=SEED).fit_transform(X_cat)
+)
+fig, axes = plt.subplots(1, 2, figsize=(16, 7), layout="constrained")
+auto = (catalogo["revision"] == "automática").to_numpy()
+# Paleta sin grises: el gris queda reservado para «revisión manual».
+paleta = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#17becf"]
+axes[0].scatter(emb[~auto, 0], emb[~auto, 1], s=3, c="#d0d0d0", label="revisión manual")
+for color, cat in zip(paleta, modelo_final.classes_):
+    m = auto & (catalogo["prediccion"] == cat).to_numpy()
+    axes[0].scatter(emb[m, 0], emb[m, 1], s=3, alpha=0.7, c=color, label=cat)
+axes[0].set_title("Catálogo completo: categoría predicha (gris = confianza < 0,8)")
+axes[0].legend(markerscale=4, fontsize=8, loc="lower left")
+sc = axes[1].scatter(emb[:, 0], emb[:, 1], s=3, c=catalogo["confianza"], cmap="viridis")
+fig.colorbar(sc, ax=axes[1], label="confianza")
+axes[1].set_title("Catálogo completo: confianza de la predicción")
+for ax in axes:
+    ax.set_xticks([])
+    ax.set_yticks([])
+fig.savefig(FIG / "catalogo_tsne.png", bbox_inches="tight")
+
+# %% [markdown]
+# **Lectura del mapa.** Cada punto es un producto; productos con nombres parecidos quedan
+# cerca. Las islas compactas de un solo color son líneas de producto que el modelo
+# reconoce con seguridad (esmaltes de una marca, tintes numerados); los puntos grises
+# —revisión manual— se concentran en las zonas donde se mezclan colores, que son
+# justamente los nombres ambiguos. El mapa de la derecha muestra lo mismo desde la
+# confianza: las islas son amarillas (confianza ≈ 1) y las zonas mezcladas, oscuras.
+
+# %%
+# Ejemplos por categoría: los 3 productos con mayor confianza en cada una.
+ejemplos = (
+    catalogo[catalogo["revision"] == "automática"]
+    .sort_values("confianza", ascending=False)
+    .groupby("prediccion")
+    .head(3)
+    .sort_values(["prediccion", "confianza"], ascending=[True, False])
+)
+ejemplos[["prediccion", "nombre", "confianza"]].round(3).reset_index(drop=True)
+
+# %%
 # Ejemplos: las predicciones más seguras y las más dudosas.
 cols = ["nombre", "prediccion", "confianza"]
 pd.concat({
@@ -519,7 +565,20 @@ CAPILARES = {"Cuidado capilar", "Coloración capilar"}
 ya = catalogo[catalogo["categoria_erp"] != "General"]
 print(f"{len(ya)} productos con categoría previa en el ERP")
 print(f"Predichos como capilares: {100 * ya['prediccion'].isin(CAPILARES).mean():.1f} %")
-pd.crosstab(ya["categoria_erp"], ya["prediccion"]).loc[lambda t: t.sum(axis=1).sort_values(ascending=False).index].head(10)
+tabla = pd.crosstab(ya["categoria_erp"], ya["prediccion"])
+tabla = tabla.loc[tabla.sum(axis=1).sort_values(ascending=False).index].head(12)
+fig, ax = plt.subplots(figsize=(9, 6), layout="constrained")
+im = ax.imshow(tabla.to_numpy(), cmap="Blues", aspect="auto")
+ax.set_xticks(range(len(tabla.columns)), tabla.columns, rotation=35, ha="right")
+ax.set_yticks(range(len(tabla.index)), tabla.index)
+for (r, c), v in np.ndenumerate(tabla.to_numpy()):
+    if v:
+        ax.text(c, r, v, ha="center", va="center", fontsize=8,
+                color="white" if v > tabla.to_numpy().max() / 2 else "black")
+ax.set_xlabel("categoría predicha por el modelo")
+ax.set_ylabel("categoría previa en el ERP (puesta por la tienda)")
+ax.set_title("Validación externa: ERP vs. modelo")
+fig.savefig(FIG / "validacion_erp.png", bbox_inches="tight")
 
 # %% [markdown]
 # **Lectura.**
