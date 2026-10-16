@@ -4,7 +4,8 @@
 
 # %%
 # Prompt (IA): «Arma la celda de setup para que el notebook corra igual en Colab y en
-# local: en Colab clona el repo y usa src/ sin pip install; fija la semilla.»
+# local: en Colab clona el repo para tener los datos publicados; fija la semilla. Todo el
+# código del análisis se define dentro del notebook.»
 import sys
 from pathlib import Path
 
@@ -14,43 +15,41 @@ if "google.colab" in sys.modules:
     subprocess.run(["git", "clone", "-q", "https://github.com/xGerart/ml-catalogo-pladsh.git"], check=False)
     os.chdir("ml-catalogo-pladsh")
     subprocess.run([sys.executable, "-m", "pip", "install", "-q", "wordcloud", "optuna"], check=True)
-sys.path.insert(0, str(Path.cwd() if (Path.cwd() / "src").exists() else Path.cwd().parent) + "/src")
 
 import json
+import re
 import warnings
 from collections import Counter
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from scipy.stats import wilcoxon
+from sklearn.base import BaseEstimator, TransformerMixin, clone
+from sklearn.decomposition import TruncatedSVD
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.feature_selection import SelectKBest, chi2
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import ConfusionMatrixDisplay, classification_report
-from sklearn.model_selection import (
-    GridSearchCV, RepeatedStratifiedKFold, StratifiedKFold, cross_val_predict, train_test_split,
-)
-from sklearn.base import clone
-from sklearn.decomposition import TruncatedSVD
 from sklearn.manifold import TSNE
+from sklearn.metrics import (
+    ConfusionMatrixDisplay, accuracy_score, auc, classification_report, f1_score, precision_score,
+    recall_score, roc_auc_score, roc_curve,
+)
+from sklearn.model_selection import (
+    GridSearchCV, RepeatedStratifiedKFold, StratifiedKFold, cross_val_predict, cross_val_score,
+    learning_curve, train_test_split,
+)
 from sklearn.neighbors import NearestNeighbors
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, label_binarize
 from sklearn.svm import SVC
 from wordcloud import WordCloud
 
-from catalogo import SEED
-from catalogo.data import find_root
-from catalogo.evaluation import (
-    classification_metrics, corrected_resampled_ttest, plot_learning_curve, plot_param_curve,
-    plot_roc_multiclass, plot_tsne, repeated_cv_scores, wilcoxon_test,
-)
-from catalogo.features import MeanEmbeddingVectorizer, tokenize, vocabulary_coverage
-from catalogo.labeling import load_labeled
-
+SEED = 42  # semilla única de todo el proyecto
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", message="k=.*is greater than n_features")
-ROOT = find_root()
+# Raíz del proyecto: la carpeta clonada en Colab, o la carpeta padre si se ejecuta desde notebooks/.
+ROOT = Path.cwd() if (Path.cwd() / "data").exists() else Path.cwd().parent
 FIG = ROOT / "reports/figures"
 W2V = str(ROOT / "data/processed/w2v_vocab.npz")
 np.random.seed(SEED)
@@ -98,14 +97,15 @@ display(Image(filename=str(ROOT / "reports/figures/diagrama_flujo.png"), width=9
 
 # %%
 # Prompt (IA): «Carga el dataset etiquetado y el resumen de la revisión del etiquetado.»
-df = load_labeled(ROOT / "data/processed/productos_etiquetados.csv")
+df = pd.read_csv(ROOT / "data/processed/productos_etiquetados.csv", dtype={"nombre": str, "etiqueta": str})
 resumen = json.loads((ROOT / "etiquetado/resumen.json").read_text())
 resumen
 
 # %% [markdown]
 # ## 2. Datos y etiquetado
 #
-# **Origen.** Export de solo lectura del ERP en producción (2026-10-06). Solo se usan
+# **Origen.** Export de solo lectura del ERP en producción (2026-10-06); la consulta y
+# todo el código de preparación de los datos están en el **Anexo A**. Solo se usan
 # `id` y `nombre`; precio, ventas y código de barras se descartaron a propósito: las
 # ventas no dicen qué *es* un producto y un producto nuevo no las tiene; el código de
 # barras es un identificador arbitrario.
@@ -178,6 +178,25 @@ fig.savefig(FIG / "largo_nombres.png", bbox_inches="tight")
 # estandarizan con `StandardScaler` porque el kernel RBF del SVM depende de distancias.
 # **¿Estacionalidad?** No aplica: no es una serie de tiempo.
 
+# %% [markdown]
+# **Tokenizador.** Para el word cloud, las palabras frecuentes y Word2Vec se necesita
+# partir cada nombre en palabras: minúsculas, solo letras (con tildes y ñ) y de al menos
+# 2 letras, así se descartan números, códigos y unidades sueltas («ESM UV LED #12 12ML» →
+# esm, uv, led, ml). TF-IDF no lo usa: trabaja con n-gramas de caracteres.
+
+# %%
+# Prompt (IA): «Escribe un tokenizador que devuelva las palabras alfabéticas en minúscula
+# de al menos 2 letras, con tildes y ñ, descartando números y códigos.»
+TOKEN_RE = re.compile(r"[a-záéíóúüñ]+")
+
+
+def tokenize(text: str) -> list[str]:
+    """Palabras alfabéticas en minúscula de al menos 2 letras (descarta números y códigos)."""
+    return [t for t in TOKEN_RE.findall(str(text).lower()) if len(t) >= 2]
+
+
+tokenize("ESM UV LED #12 12ML")
+
 # %%
 # Prompt (IA): «Genera un word cloud con las palabras de los nombres de producto.»
 fig, ax = plt.subplots(figsize=(10, 5))
@@ -203,6 +222,29 @@ pd.DataFrame({c: [f"{w} ({n})" for w, n in ws] for c, ws in top.items()})
 
 # %%
 # Prompt (IA): «Mide qué porcentaje de las palabras del dataset no tiene vector en el Word2Vec preentrenado.»
+def vocabulary_coverage(texts, words: set[str]) -> dict:
+    """Qué tanto del catálogo cubre el modelo preentrenado."""
+    faltantes: Counter[str] = Counter()
+    total = sin_vector = productos_sin = 0
+    for text in texts:
+        toks = tokenize(text)
+        missing = [t for t in toks if t not in words]
+        total += len(toks)
+        sin_vector += len(missing)
+        faltantes.update(missing)
+        if len(missing) == len(toks):
+            productos_sin += 1
+    n = len(texts)
+    return {
+        "tokens_total": total,
+        "tokens_sin_vector": sin_vector,
+        "pct_tokens_sin_vector": round(100 * sin_vector / max(total, 1), 2),
+        "productos_sin_vector": productos_sin,
+        "pct_productos_sin_vector": round(100 * productos_sin / max(n, 1), 2),
+        "top_sin_vector": faltantes.most_common(20),
+    }
+
+
 words = set(np.load(W2V)["words"].tolist())
 cov = vocabulary_coverage(df["nombre"].tolist(), words)
 cov
@@ -331,6 +373,45 @@ fig.savefig(FIG / "clustering.png", bbox_inches="tight")
 # recortó al vocabulario del catálogo con gensim [13] (`scripts/extraer_vocab_w2v.py`, con verificación
 # SHA-256 del archivo descargado).
 
+# %% [markdown]
+# **Transformador Word2Vec.** sklearn no trae un transformador «promedio de Word2Vec», así
+# que se escribe uno compatible con `Pipeline`: hereda de `BaseEstimator` (para que
+# `GridSearchCV` lo pueda clonar) y de `TransformerMixin` (que aporta `fit_transform`).
+# `fit` solo carga los vectores ya entrenados —eso es el *transfer learning*: no aprende
+# nada de los 1 000 nombres— y `transform` promedia los vectores de las palabras de cada
+# nombre. Un nombre sin ninguna palabra conocida queda en el vector cero.
+
+# %%
+# Prompt (IA): «Escribe un transformador de sklearn que convierta cada nombre en el promedio
+# de los vectores Word2Vec de sus palabras, cargando los vectores desde un .npz, y que deje
+# en cero los nombres sin ninguna palabra conocida.»
+class MeanEmbeddingVectorizer(BaseEstimator, TransformerMixin):
+    """Vector de un producto = promedio de los vectores Word2Vec de sus palabras.
+
+    Un nombre sin ninguna palabra con vector queda en cero: es información
+    («el modelo preentrenado no conoce este producto»), no un error.
+    """
+
+    def __init__(self, vectors_path: str):
+        self.vectors_path = vectors_path
+
+    def fit(self, X, y=None):
+        data = np.load(self.vectors_path)
+        self.index_ = {w: i for i, w in enumerate(data["words"].tolist())}
+        self.matrix_ = data["vectors"].astype(np.float32)
+        return self
+
+    def transform(self, X):
+        out = np.zeros((len(X), self.matrix_.shape[1]), dtype=np.float32)
+        for i, text in enumerate(X):
+            idx = [self.index_[t] for t in tokenize(text) if t in self.index_]
+            if idx:
+                out[i] = self.matrix_[idx].mean(axis=0)
+        return out
+
+
+MeanEmbeddingVectorizer(W2V).fit_transform(["ESMALTE ROJO", "ALFAPARF 8.1"])[:, :4]
+
 # %%
 # Prompt (IA): «Muestra los vecinos más cercanos de algunas palabras en el espacio Word2Vec.»
 # Vecinos más cercanos en el espacio Word2Vec: muestran qué "sabe" el modelo preentrenado.
@@ -424,6 +505,76 @@ search_w2v = GridSearchCV(
 ).fit(X_train, y_train)
 search_tfidf.best_params_, search_tfidf.best_score_, search_w2v.best_params_, search_w2v.best_score_
 
+# %% [markdown]
+# **Funciones de gráfico de la optimización.** `plot_param_curve` toma los resultados de
+# `GridSearchCV` (`cv_results_`), fija los demás hiperparámetros en su mejor valor y
+# dibuja el F1 (o el error = 1 − F1) de entrenamiento y de validación, con la media ± la
+# desviación estándar de los folds, contra el hiperparámetro elegido. `plot_learning_curve`
+# usa `sklearn.model_selection.learning_curve` [16] para entrenar con tamaños crecientes del
+# entrenamiento y medir ambos errores.
+
+# %%
+# Prompt (IA): «Escribe una función que grafique el score o el error de entrenamiento y de
+# validación (media ± std) contra un hiperparámetro a partir de un GridSearchCV, fijando los
+# demás en su mejor valor, con valores no numéricos como líneas horizontales; y otra que
+# grafique la curva de aprendizaje con learning_curve.»
+def plot_param_curve(search, param: str, ax, log: bool = True, label: str | None = None,
+                     as_error: bool = False, x_transform=None, x_label: str | None = None):
+    """Score (o error) de entrenamiento y de validación (media ± std) vs. un hiperparámetro.
+
+    Los demás hiperparámetros se fijan en su mejor valor. La curva de entrenamiento solo
+    aparece si el GridSearchCV se corrió con return_train_score=True. Valores no
+    numéricos de la grilla (p. ej. k="all") se dibujan como líneas horizontales.
+
+    as_error=True grafica 1 − score (con F1, el error); x_transform permite graficar, por
+    ejemplo, λ = 1/C en vez de C, para leer la curva como en la teoría (Loss vs. λ).
+    """
+    res = pd.DataFrame(search.cv_results_)
+    key = f"param_{param}"
+    for other, best in search.best_params_.items():
+        if other != param:
+            res = res[res[f"param_{other}"].astype(str) == str(best)]
+    tx = x_transform or (lambda v: v)
+    ty = (lambda v: 1 - v) if as_error else (lambda v: v)
+    numeric = pd.to_numeric(res[key], errors="coerce")
+    num = res[numeric.notna()].assign(_x=tx(numeric[numeric.notna()].astype(float))).sort_values("_x")
+    series = [("validación", "test", "tab:orange")]
+    if "mean_train_score" in res:
+        series.insert(0, ("entrenamiento", "train", "tab:blue"))
+    for nombre, split, color in series:
+        ax.errorbar(num["_x"], ty(num[f"mean_{split}_score"]), yerr=num[f"std_{split}_score"],
+                    marker="o", capsize=3, color=color, label=nombre)
+        for _, row in res[numeric.isna()].iterrows():
+            ax.axhline(ty(row[f"mean_{split}_score"]), ls=":", color=color, label=f"{nombre} ({param} = {row[key]})")
+    if log:
+        ax.set_xscale("log")
+    best = search.best_params_[param]
+    if pd.notna(pd.to_numeric(best, errors="coerce")):
+        ax.axvline(float(tx(float(best))), ls="--", c="grey", label="óptimo")
+    ax.set_xlabel(x_label or param)
+    metric = str(search.scoring)
+    ax.set_ylabel(f"error = 1 − {metric}" if as_error else metric)
+    ax.legend(fontsize=8)
+
+
+def plot_learning_curve(estimator, X, y, cv, ax, scoring="f1_macro", title="", as_error: bool = False):
+    """Curva de aprendizaje: score (o error = 1 − score) de entrenamiento y validación vs. m."""
+    sizes, train, val = learning_curve(
+        estimator, X, y, cv=cv, scoring=scoring, n_jobs=-1, train_sizes=np.linspace(0.1, 1.0, 6)
+    )
+    if as_error:
+        train, val = 1 - train, 1 - val
+    for scores, name in ((train, "entrenamiento"), (val, "validación")):
+        m, s = scores.mean(axis=1), scores.std(axis=1)
+        ax.plot(sizes, m, marker="o", label=name)
+        ax.fill_between(sizes, m - s, m + s, alpha=0.2)
+    ax.set_xlabel("m (ejemplos de entrenamiento)")
+    ax.set_ylabel(f"error = 1 − {scoring}" if as_error else scoring)
+    ax.set_title(title)
+    ax.legend()
+    return sizes, train.mean(axis=1), val.mean(axis=1)
+
+
 # %%
 # Prompt (IA): «Grafica la optimización como en la teoría del curso: error = 1 − F1-macro
 # de entrenamiento y validación contra λ = 1/C, marcando sobreajuste, subajuste y óptimo.»
@@ -510,7 +661,6 @@ fig.savefig(FIG / "curvas_aprendizaje.png", bbox_inches="tight")
 # CV 5×3 y F1-macro que la grilla, buscando λ en escala log continua; compara con la grilla.»
 import optuna
 import optuna.visualization.matplotlib as ov
-from sklearn.model_selection import cross_val_score
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 warnings.filterwarnings("ignore", category=optuna.exceptions.ExperimentalWarning)
@@ -628,6 +778,64 @@ guardar(ax, "Optuna · Word2Vec + SVM: F1-macro según λ y γ", "optuna_contorn
 # combinaciones) es más grande que la de Word2Vec (24): el sesgo de selección favorece
 # levemente a TF-IDF. El test de la sección siguiente, con 200 productos nunca vistos,
 # controla ese sesgo.
+#
+# **Las tres funciones de la comparación.** `repeated_cv_scores` evalúa ambos modelos con
+# **un mismo** objeto `RepeatedStratifiedKFold` de semilla fija, así los dos ven
+# exactamente los mismos 100 folds (requisito del test pareado). `wilcoxon_test` aplica
+# `scipy.stats.wilcoxon` sobre los 100 pares. `corrected_resampled_ttest` implementa la
+# fórmula de Nadeau y Bengio: t = d̄ / √((1/J + n_test/n_train) · s²), con J − 1 grados de
+# libertad.
+
+# %%
+# Prompt (IA): «Escribe una función que evalúe varios modelos con RepeatedStratifiedKFold
+# usando los mismos folds, otra que aplique scipy.stats.wilcoxon a dos columnas de scores y
+# otra con el t-test corregido de Nadeau y Bengio para CV repetida.»
+def repeated_cv_scores(estimators, X, y, n_splits=10, n_repeats=10, seed=SEED, scoring="f1_macro"):
+    """Mismos folds para todos los modelos: requisito para un test pareado."""
+    cv = RepeatedStratifiedKFold(n_splits=n_splits, n_repeats=n_repeats, random_state=seed)
+    return pd.DataFrame(
+        {
+            name: cross_val_score(clone(est), X, y, cv=cv, scoring=scoring, n_jobs=-1)
+            for name, est in estimators.items()
+        }
+    )
+
+
+def wilcoxon_test(scores: pd.DataFrame, a: str, b: str, alpha: float = 0.05) -> dict:
+    stat, p = wilcoxon(scores[a], scores[b])
+    media_a, media_b = float(scores[a].mean()), float(scores[b].mean())
+    return {
+        "estadistico": float(stat),
+        "p_value": float(p),
+        "alpha": alpha,
+        "significativo": bool(p < alpha),
+        "media_a": media_a,
+        "media_b": media_b,
+        "mejor": a if media_a >= media_b else b,
+    }
+
+
+def corrected_resampled_ttest(scores: pd.DataFrame, a: str, b: str, n_train: int, n_test: int, alpha: float = 0.05) -> dict:
+    """t-test con la corrección de Nadeau y Bengio (2003) para CV repetida.
+
+    Los folds comparten datos, así que la varianza de las diferencias se subestima; la
+    corrección la infla por (1/J + n_test/n_train) en lugar de 1/J.
+    """
+    from scipy.stats import t as t_dist
+
+    d = (scores[a] - scores[b]).to_numpy()
+    J = len(d)
+    var = d.var(ddof=1)
+    t_stat = d.mean() / np.sqrt((1 / J + n_test / n_train) * var)
+    p = 2 * t_dist.sf(abs(t_stat), df=J - 1)
+    return {
+        "t": float(t_stat),
+        "p_value": float(p),
+        "alpha": alpha,
+        "significativo": bool(p < alpha),
+        "mejor": a if d.mean() >= 0 else b,
+    }
+
 
 # %%
 # Prompt (IA): «Compara los dos mejores modelos con repeated stratified 10x10 CV usando
@@ -659,6 +867,42 @@ print(f"t corregido (Nadeau–Bengio): t = {res_nb['t']:.2f}, p = {res_nb['p_val
 # pero la conclusión se mantiene.
 #
 # ### Métricas en el conjunto de test (200 productos nunca vistos)
+
+# %%
+# Prompt (IA): «Escribe una función con todas las métricas de clasificación de la rúbrica
+# (accuracy, precision, recall, F1 macro y weighted, AUC macro y micro) y otra que dibuje la
+# curva ROC one-vs-rest por clase más el micro-promedio con roc_curve.»
+def classification_metrics(y_true, y_pred, y_proba, classes) -> dict:
+    y_bin = label_binarize(y_true, classes=classes)
+    return {
+        "accuracy": accuracy_score(y_true, y_pred),
+        "precision_macro": precision_score(y_true, y_pred, average="macro", zero_division=0),
+        "recall_macro": recall_score(y_true, y_pred, average="macro", zero_division=0),
+        "f1_macro": f1_score(y_true, y_pred, average="macro"),
+        "f1_weighted": f1_score(y_true, y_pred, average="weighted"),
+        "auc_macro": roc_auc_score(y_true, y_proba, multi_class="ovr", average="macro", labels=classes),
+        "auc_micro": roc_auc_score(y_bin, y_proba, average="micro"),
+    }
+
+
+def plot_roc_multiclass(y_true, y_proba, classes, ax, title=""):
+    """Curva ROC one-vs-rest por clase más el micro-promedio.
+
+    Se dibuja con roc_curve + ax.plot (no con RocCurveDisplay) porque la API de estilo
+    de RocCurveDisplay cambió en sklearn 1.7 y Colab puede traer otra versión.
+    """
+    y_bin = label_binarize(y_true, classes=classes)
+    for i, c in enumerate(classes):
+        fpr, tpr, _ = roc_curve(y_bin[:, i], y_proba[:, i])
+        ax.plot(fpr, tpr, lw=1, label=f"{c} (AUC {auc(fpr, tpr):.2f})")
+    fpr, tpr, _ = roc_curve(y_bin.ravel(), y_proba.ravel())
+    ax.plot(fpr, tpr, ls="--", lw=2, c="black", label=f"micro-promedio (AUC {auc(fpr, tpr):.2f})")
+    ax.plot([0, 1], [0, 1], c="grey", lw=0.8)
+    ax.set_xlabel("tasa de falsos positivos")
+    ax.set_ylabel("tasa de verdaderos positivos")
+    ax.set_title(title)
+    ax.legend(fontsize=7)
+
 
 # %%
 # Prompt (IA): «Calcula en el test todas las métricas de la rúbrica para ambos modelos y grafica la curva ROC multiclase.»
@@ -697,6 +941,24 @@ fig.savefig(FIG / "matriz_confusion.png", bbox_inches="tight")
 
 # %% [markdown]
 # ## 9. Visualización con t-SNE (color = categoría)
+
+# %%
+# Prompt (IA): «Escribe una función que proyecte una matriz de features a 2D con t-SNE
+# (semilla fija, inicialización PCA), la dibuje coloreada por etiqueta y devuelva las coordenadas.»
+def plot_tsne(X, labels, ax, title="", seed=SEED):
+    """t-SNE 2D coloreado por etiqueta; devuelve las coordenadas para poder anotar puntos."""
+    X = X.toarray() if hasattr(X, "toarray") else np.asarray(X)
+    emb = TSNE(n_components=2, random_state=seed, init="pca", perplexity=30).fit_transform(X)
+    labels = np.asarray(labels)
+    for c in np.unique(labels):
+        mask = labels == c
+        ax.scatter(emb[mask, 0], emb[mask, 1], s=8, label=str(c), alpha=0.7)
+    ax.set_title(title)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.legend(markerscale=2, fontsize=7)
+    return emb
+
 
 # %%
 # Prompt (IA): «Visualiza con t-SNE los dos espacios de features coloreados por la
@@ -956,7 +1218,346 @@ fig.savefig(FIG / "validacion_erp.png", bbox_inches="tight")
 #
 # **Limitaciones:** una sola tienda; etiquetas de un solo revisor (sin acuerdo entre
 # anotadores); scores de CV repetida no independientes; la taxonomía es de esta tienda.
+
+# %% [markdown]
+# ## Anexo A. Preparación de los datos (código completo)
 #
+# Este anexo contiene **todo el código que produjo los archivos de `data/processed/`** que
+# usa el notebook: extracción, limpieza, muestreo, etiquetado asistido y recorte de
+# Word2Vec. Así el flujo completo, de la base de datos al dataset, queda dentro del
+# notebook. Se ejecuta y se **verifica** todo lo que se puede comprobar con los datos
+# publicados. Hay dos pasos que no se pueden repetir en Colab: los que necesitan el export
+# privado del ERP (`data/raw/`) y la planilla de revisión (`data/interim/`), que se
+# ejecutan solo si esos archivos existen, y la descarga de 1,1 GB de Word2Vec, que queda
+# desactivada por defecto.
+#
+# ### A.1 Extracción desde el ERP
+#
+# El catálogo se exportó el 2026-10-06 de la base PostgreSQL del ERP en producción, con
+# una consulta **de solo lectura** sobre el esquema de la tienda. No se incluye la
+# conexión porque es una base de producción con credenciales privadas; en su lugar se
+# publican los datos resultantes (solo `id`, `nombre` y la categoría actual del ERP, sin
+# precios, ventas ni clientes). La consulta exportó también columnas de ventas, precio y
+# marca para la exploración inicial; se descartaron por los motivos de la sección 2.
+#
+# ```sql
+# SET search_path TO <esquema_de_la_tienda>;
+# COPY (
+#   WITH ventas AS (
+#     SELECT i.product_id,
+#            count(*) AS lineas_vendidas,
+#            count(DISTINCT i.voucher_id) AS tickets,
+#            sum(i.base_units) AS unidades_vendidas,
+#            count(DISTINCT (v.created_at AT TIME ZONE 'America/Guayaquil')::date) AS dias_con_venta,
+#            round(avg(i.unit_price), 2) AS precio_promedio_vendido,
+#            min((v.created_at AT TIME ZONE 'America/Guayaquil')::date) AS primera_venta,
+#            max((v.created_at AT TIME ZONE 'America/Guayaquil')::date) AS ultima_venta
+#     FROM sales_voucher_items i
+#     JOIN sales_vouchers v ON v.id = i.voucher_id
+#     WHERE v.status = 'completed'
+#     GROUP BY i.product_id
+#   )
+#   SELECT p.id, p.name AS nombre, p.description AS descripcion, p.product_type AS tipo,
+#          c.name AS categoria, b.name AS marca, p.unit_type AS unidad,
+#          p.sale_price AS precio_venta, p.is_kit, p.is_active, p.is_for_sale,
+#          p.tracking_mode, p.supplier_code AS codigo_proveedor,
+#          (p.created_at AT TIME ZONE 'America/Guayaquil')::date AS creado,
+#          COALESCE(v.lineas_vendidas, 0) AS lineas_vendidas,
+#          COALESCE(v.tickets, 0) AS tickets,
+#          COALESCE(v.unidades_vendidas, 0) AS unidades_vendidas,
+#          COALESCE(v.dias_con_venta, 0) AS dias_con_venta,
+#          v.precio_promedio_vendido, v.primera_venta, v.ultima_venta
+#   FROM inventory_product p
+#   LEFT JOIN inventory_category c ON c.id = p.category_id
+#   LEFT JOIN inventory_brand b ON b.id = p.brand_id
+#   LEFT JOIN ventas v ON v.product_id = p.id
+#   ORDER BY p.id
+# ) TO STDOUT WITH (FORMAT csv, HEADER true, ENCODING 'UTF8');
+# ```
+#
+# ### A.2 Limpieza y deduplicado
+#
+# Se normaliza cada nombre (mayúsculas, espacios colapsados), se descartan vacíos y se deja
+# un producto por nombre (el de `id` menor), **antes** de muestrear: así el mismo texto
+# nunca cae en entrenamiento y en test a la vez.
+
+# %%
+# Prompt (IA): «Escribe las funciones que normalizan los nombres, deduplican el catálogo
+# conservando el id menor y cargan el export del ERP con solo los productos activos;
+# verifica sobre los datos publicados que no queden nombres repetidos.»
+RAW = ROOT / "data/raw/productos.csv"  # export privado del ERP: no se publica
+
+
+def normalize_name(name: str) -> str:
+    """Mayúsculas y espacios colapsados: dos nombres que solo difieren en eso son el mismo."""
+    return re.sub(r"\s+", " ", str(name)).strip().upper()
+
+
+def deduplicate(df: pd.DataFrame) -> pd.DataFrame:
+    """Una fila por nombre normalizado, conservando el id menor.
+
+    Se hace ANTES de muestrear: así un mismo texto nunca queda en train y test a la vez.
+    """
+    out = df[["id", "nombre"]].assign(nombre=df["nombre"].map(normalize_name))
+    out = out[out["nombre"] != ""]
+    out = out.sort_values("id").drop_duplicates("nombre", keep="first")
+    return out.reset_index(drop=True)
+
+
+def load_catalog(path: Path) -> pd.DataFrame:
+    """Lee el export crudo del ERP y devuelve los productos activos deduplicados (id, nombre)."""
+    df = pd.read_csv(path, usecols=["id", "nombre", "is_active"], dtype={"nombre": str})
+    df = df[df["is_active"] == "t"]
+    return deduplicate(df)
+
+
+# Verificación con los datos publicados: los 1 000 etiquetados + los 9 777 restantes son el
+# catálogo deduplicado completo.
+publicado = pd.concat(
+    [df[["id", "nombre"]], pd.read_csv(ROOT / "data/processed/catalogo_sin_etiquetar.csv")[["id", "nombre"]]]
+).sort_values("id").reset_index(drop=True)
+print(f"Productos únicos publicados: {len(publicado)}")
+print(f"Nombres repetidos: {publicado['nombre'].duplicated().sum()} · "
+      f"nombres sin normalizar: {(publicado['nombre'].map(normalize_name) != publicado['nombre']).sum()}")
+if RAW.exists():
+    print(f"Desde el export del ERP: {len(load_catalog(RAW))} productos únicos")
+
+# %% [markdown]
+# ### A.3 Muestra para etiquetar
+#
+# Muestra aleatoria simple de 1 000 productos con la semilla 42. La verificación de abajo
+# **reconstruye la muestra** a partir de los datos publicados y comprueba que salen
+# exactamente los mismos 1 000 productos que están etiquetados: el muestreo es
+# reproducible.
+
+# %%
+# Prompt (IA): «Escribe la función de muestreo aleatorio reproducible y comprueba que, aplicada
+# al catálogo deduplicado publicado, devuelve exactamente los 1 000 productos etiquetados.»
+def sample_for_labeling(df: pd.DataFrame, n: int = 1000, seed: int = SEED) -> pd.DataFrame:
+    """Muestra aleatoria simple y reproducible para etiquetar."""
+    if n > len(df):
+        raise ValueError(f"Se pidieron {n} productos pero el catálogo tiene {len(df)}")
+    return df.sample(n=n, random_state=seed).reset_index(drop=True)
+
+
+muestra = sample_for_labeling(publicado, n=1000)
+print(f"La muestra reconstruida coincide con los 1 000 etiquetados: {set(muestra['id']) == set(df['id'])}")
+
+# %% [markdown]
+# ### A.4 Etiquetado asistido
+#
+# 1. Un LLM propuso una categoría por producto con el prompt de la sección 2.
+# 2. `write_review_workbook` arma una planilla Excel ordenada por la propuesta, con la
+#    columna `final` prellenada y un desplegable cerrado con las categorías válidas. Los
+#    nombres se escriben como texto (un nombre que empiece con «=» se interpretaría como
+#    fórmula).
+# 3. El autor revisó las 1 000 filas en la planilla.
+# 4. `check_review_matches_sample` comprueba que solo se editó la columna `final` (ni ids
+#    ni nombres), y `build_labeled_dataset` valida que no haya celdas vacías ni categorías
+#    fuera de la taxonomía, excluye «No sé» y fusiona en «Otros» las clases con menos de 30
+#    ejemplos.
+#
+# La planilla está en `data/interim/` y no se publica; la celda la procesa solo si existe.
+# Lo que sí se verifica abajo es que el dataset publicado cumple las reglas.
+
+# %%
+# Prompt (IA): «Escribe la taxonomía, la planilla de revisión con desplegable cerrado y nombres
+# forzados a texto, su lectura, y la construcción del dataset que valida la revisión, excluye
+# "No sé" y fusiona en "Otros" las clases con menos de 30 ejemplos; verifica las reglas
+# sobre el dataset publicado.»
+from openpyxl import Workbook, load_workbook
+from openpyxl.worksheet.datavalidation import DataValidation
+
+NO_SE = "No sé"
+OTROS = "Otros"
+CATEGORIES: list[str] = [
+    "Uñas",
+    "Cuidado capilar",
+    "Coloración capilar",
+    "Maquillaje",
+    "Pestañas y cejas",
+    "Piel y cuerpo",
+    "Herramientas y equipos de cabello",
+    "Extensiones y accesorios de cabello",
+    OTROS,
+]
+COLUMNS = ["id", "nombre", "propuesta", "final"]
+MIN_STRATIFIED = 13  # tras el 80/20 quedan ≥ 10 por clase en train: lo que pide la CV de 10 folds
+
+
+def write_review_workbook(df: pd.DataFrame, categories: list[str], path: Path) -> None:
+    """Excel ordenado por propuesta, con `final` prellenado y desplegable cerrado."""
+    rows = df.sort_values(["propuesta", "nombre"])
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "revision"
+    ws.append(COLUMNS)
+    for r in rows.itertuples(index=False):
+        ws.append([r.id, r.nombre, r.propuesta, r.propuesta])
+        # Un nombre que empieza con "=" se guardaría como fórmula: se fuerza texto.
+        ws.cell(row=ws.max_row, column=2).data_type = "s"
+    opciones = ",".join([*categories, NO_SE])
+    dv = DataValidation(type="list", formula1=f'"{opciones}"', allow_blank=False)
+    dv.error = "Elige una categoría de la lista"
+    ws.add_data_validation(dv)
+    dv.add(f"D2:D{len(rows) + 1}")
+    ws.column_dimensions["B"].width = 70
+    ws.column_dimensions["C"].width = 18
+    ws.column_dimensions["D"].width = 18
+    ws.freeze_panes = "A2"
+    wb.save(path)
+
+
+def read_review_workbook(path: Path) -> pd.DataFrame:
+    ws = load_workbook(path, read_only=True).active
+    values = list(ws.values)
+    return pd.DataFrame(values[1:], columns=list(values[0]))[COLUMNS]
+
+
+def build_labeled_dataset(
+    review: pd.DataFrame, categories: list[str], min_count: int = 30
+) -> tuple[pd.DataFrame, dict]:
+    """Valida la revisión, excluye «No sé», fusiona clases chicas en «Otros»."""
+    vacias = review.loc[review["final"].isna() | (review["final"].astype(str).str.strip() == ""), "id"]
+    if len(vacias):
+        raise ValueError(f"Revisión incompleta: celdas `final` vacías en ids {vacias.tolist()}")
+    validas = set(categories) | {NO_SE}
+    fuera = sorted(set(review["final"]) - validas)
+    if fuera:
+        raise ValueError(f"Etiquetas fuera de la taxonomía: {fuera}")
+
+    no_se = review["final"] == NO_SE
+    df = review[~no_se].copy()
+    corregidos = int((df["final"] != df["propuesta"]).sum())
+
+    counts = df["final"].value_counts()
+    chicas = sorted(c for c, n in counts.items() if n < min_count and c != OTROS)
+    df["etiqueta"] = df["final"].where(~df["final"].isin(chicas), OTROS)
+
+    final_counts = df["etiqueta"].value_counts()
+    insuficientes = final_counts[final_counts < MIN_STRATIFIED]
+    if len(insuficientes):
+        raise ValueError(
+            f"Clases con menos de {MIN_STRATIFIED} ejemplos tras fusionar: {insuficientes.to_dict()}"
+        )
+
+    resumen = {
+        "revisados": int(len(review)),
+        "excluidos_no_se": int(no_se.sum()),
+        "etiquetados": int(len(df)),
+        "corregidos": corregidos,
+        "pct_corregidos": round(100 * corregidos / len(df), 2),
+        "fusionadas_en_otros": chicas,
+        "distribucion": {k: int(v) for k, v in final_counts.items()},
+    }
+    out = df[["id", "nombre", "etiqueta"]].sort_values("id").reset_index(drop=True)
+    return out, resumen
+
+
+def check_review_matches_sample(review: pd.DataFrame, muestra: pd.DataFrame) -> None:
+    """El Excel solo se edita en `final`: ids y nombres deben ser los de la muestra."""
+    if set(review["id"]) != set(muestra["id"]):
+        raise ValueError(
+            f"Los ids del Excel no coinciden con la muestra: {sorted(set(review['id']) ^ set(muestra['id']))}"
+        )
+    merged = review.merge(muestra, on="id", suffixes=("_excel", "_muestra"))
+    editados = merged.loc[merged["nombre_excel"] != merged["nombre_muestra"], "id"]
+    if len(editados):
+        raise ValueError(f"Nombres editados en el Excel (ids {editados.tolist()}): solo se edita `final`")
+
+
+REVISION = ROOT / "data/interim/revision.xlsx"  # planilla revisada: no se publica
+if REVISION.exists():
+    revision = read_review_workbook(REVISION)
+    check_review_matches_sample(revision, muestra)
+    reconstruido, _ = build_labeled_dataset(revision, CATEGORIES)
+    print(f"Dataset reconstruido desde la planilla idéntico al publicado: {reconstruido.equals(df)}")
+
+# Verificación de las reglas sobre el dataset publicado.
+conteo = df["etiqueta"].value_counts()
+print(f"Etiquetas dentro de la taxonomía: {set(conteo.index) <= set(CATEGORIES)}")
+print(f"Clase más chica: {conteo.idxmin()} con {conteo.min()} ejemplos (mínimo exigido: 30)")
+print(f"«Extensiones y accesorios de cabello» fusionada en «Otros»: "
+      f"{'Extensiones y accesorios de cabello' not in conteo.index}")
+
+# %% [markdown]
+# ### A.5 Catálogo sin etiquetar
+#
+# Para la aplicación de la sección 10: el catálogo deduplicado sin los 1 000 etiquetados,
+# con la categoría que cada producto tiene hoy en el ERP (solo para validar, nunca como
+# feature).
+
+# %%
+# Prompt (IA): «Escribe la función que arma el catálogo sin etiquetar con la categoría actual
+# del ERP y verifica que no se solapa con el dataset etiquetado.»
+def unlabeled_catalog(path: Path, labeled: pd.DataFrame) -> pd.DataFrame:
+    """Catálogo deduplicado sin los productos etiquetados, con la categoría actual del ERP.
+
+    La categoría del ERP no es feature: sirve para validar las predicciones contra lo
+    que el personal de la tienda ya había categorizado.
+    """
+    catalog = load_catalog(path)
+    erp = pd.read_csv(path, usecols=["id", "categoria"]).rename(columns={"categoria": "categoria_erp"})
+    out = catalog[~catalog["id"].isin(labeled["id"])].merge(erp, on="id", how="left")
+    return out.reset_index(drop=True)
+
+
+sin_etiquetar = pd.read_csv(ROOT / "data/processed/catalogo_sin_etiquetar.csv")
+print(f"Catálogo sin etiquetar: {len(sin_etiquetar)} productos · "
+      f"solapados con los etiquetados: {sin_etiquetar['id'].isin(df['id']).sum()}")
+if RAW.exists():
+    print(f"Reconstruido desde el ERP idéntico al publicado: {unlabeled_catalog(RAW, df).equals(sin_etiquetar)}")
+
+# %% [markdown]
+# ### A.6 Recorte de Word2Vec
+#
+# Los vectores del *Spanish Billion Words Corpus* [1] pesan 1,1 GB. Se descarga el archivo,
+# se verifica su huella SHA-256 (si el servidor lo cambiara, se detecta), se carga con
+# gensim [13] y se guardan solo las palabras del catálogo (probando minúscula, Capitalizada
+# y MAYÚSCULA). Resultado: 4 263 vectores en 4,5 MB. Para repetirlo, poner
+# `RECORTAR_W2V = True` (descarga 1,1 GB e instala gensim).
+
+# %%
+# Prompt (IA): «Recorta el Word2Vec del Spanish Billion Words Corpus al vocabulario del
+# catálogo verificando el SHA-256 de la descarga; desactivado por defecto porque descarga
+# 1,1 GB. Verifica el archivo recortado publicado.»
+RECORTAR_W2V = False
+W2V_URL = "https://cs.famaf.unc.edu.ar/~ccardellino/SBWCE/SBW-vectors-300-min5.bin.gz"
+W2V_SHA256 = "fdf2148fc697b478e61d0d3d90714bd6a97aaa54d95e048b2e9393793f4792b9"
+
+if RECORTAR_W2V:
+    import hashlib
+    import subprocess
+    import urllib.request
+
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "gensim"], check=True)
+    from gensim.models import KeyedVectors
+
+    w2v_raw = ROOT / "data/raw/SBW-vectors-300-min5.bin.gz"
+    w2v_raw.parent.mkdir(parents=True, exist_ok=True)
+    if not w2v_raw.exists():
+        urllib.request.urlretrieve(W2V_URL, w2v_raw)
+    digest = hashlib.sha256()
+    with w2v_raw.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            digest.update(chunk)
+    if digest.hexdigest() != W2V_SHA256:
+        raise ValueError(f"SHA-256 inesperado para {w2v_raw.name}: {digest.hexdigest()}")
+    kv = KeyedVectors.load_word2vec_format(str(w2v_raw), binary=True)
+    vocab = sorted({t for name in publicado["nombre"] for t in tokenize(name)})
+    palabras_w2v, vectores_w2v = [], []
+    for w in vocab:
+        for variant in (w, w.capitalize(), w.upper()):
+            if variant in kv.key_to_index:
+                palabras_w2v.append(w)
+                vectores_w2v.append(kv[variant])
+                break
+    np.savez_compressed(W2V, words=np.array(palabras_w2v), vectors=np.array(vectores_w2v, dtype=np.float32))
+
+recortado = np.load(W2V)
+print(f"Word2Vec recortado: {len(recortado['words'])} palabras × {recortado['vectors'].shape[1]} dimensiones")
+
+# %% [markdown]
 # ## 12. Referencias
 #
 # [1] C. Cardellino, "Spanish Billion Words Corpus and Embeddings," 2016. [Online]. Available: https://crscardellino.ar/SBWCE/

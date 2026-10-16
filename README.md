@@ -39,10 +39,10 @@ automáticamente el **78,7 %** (confianza ≥ 0,8, con 96,8 % de acierto en test
 
 - `notebooks/proyecto_final.ipynb` — entregable (abre en Colab con el botón de arriba)
 - `notebooks/01_eda_taxonomia.ipynb` — clustering exploratorio usado para definir la taxonomía
-- `src/catalogo/` — carga de datos, etiquetado, features y evaluación (probado con pytest)
+- `src/catalogo/` — las mismas funciones que define el notebook, cubiertas por pytest; un test verifica que ambas copias sean idénticas (el notebook es autocontenido: no importa nada de `src/`)
 - `data/processed/` — dataset etiquetado (`id, nombre, etiqueta`), catálogo sin etiquetar (`id, nombre, categoria_erp`) y vectores Word2Vec recortados
 - `etiquetado/` — taxonomía, prompt del etiquetado asistido y resumen de la revisión
-- `scripts/` — muestreo, construcción del dataset y recorte del Word2Vec
+- `scripts/` — muestreo, construcción del dataset y recorte del Word2Vec (el mismo código está en el Anexo A del notebook)
 - `DECISIONES.md` — por qué se tomó cada decisión
 - `docs/superpowers/` — diseño (spec) y plan de implementación
 
