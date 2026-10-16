@@ -24,6 +24,7 @@ from collections import Counter
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import sklearn
 from scipy.stats import wilcoxon
 from sklearn.base import BaseEstimator, TransformerMixin, clone
 from sklearn.decomposition import TruncatedSVD
@@ -53,6 +54,8 @@ ROOT = Path.cwd() if (Path.cwd() / "data").exists() else Path.cwd().parent
 FIG = ROOT / "reports/figures"
 W2V = str(ROOT / "data/processed/w2v_vocab.npz")
 np.random.seed(SEED)
+print(f"Python {sys.version.split()[0]} · scikit-learn {sklearn.__version__} · numpy {np.__version__} · "
+      f"pandas {pd.__version__} · semilla {SEED}")
 
 # %% [markdown]
 # ## 1. Introducción
@@ -509,6 +512,7 @@ pipe_w2v = Pipeline([
     ("scaler", StandardScaler()),
     ("clf", SVC(kernel="rbf", probability=True, random_state=SEED)),
 ])
+display(pipe_tfidf, pipe_w2v)
 
 # %% [markdown]
 # ## 7. Optimización de hiperparámetros
@@ -616,7 +620,6 @@ def plot_learning_curve(estimator, X, y, cv, ax, scoring="f1_macro", title="", a
     return sizes, train.mean(axis=1), val.mean(axis=1)
 
 
-# %%
 # Prompt (IA): «Grafica la optimización como en la teoría del curso: error = 1 − F1-macro
 # de entrenamiento y validación contra λ = 1/C, marcando sobreajuste, subajuste y óptimo.»
 def marcar_regiones(ax):
@@ -878,7 +881,6 @@ def corrected_resampled_ttest(scores: pd.DataFrame, a: str, b: str, n_train: int
     }
 
 
-# %%
 # Prompt (IA): «Compara los dos mejores modelos con repeated stratified 10x10 CV usando
 # los mismos folds y aplica Wilcoxon pareado con alpha 0.05; grafica la distribución.»
 N_SPLITS, N_REPEATS = 10, 10  # bajar a 5, 2 si tarda > ~15 min en Colab (permitido por la rúbrica)
@@ -945,7 +947,6 @@ def plot_roc_multiclass(y_true, y_proba, classes, ax, title=""):
     ax.legend(fontsize=7)
 
 
-# %%
 # Prompt (IA): «Calcula en el test todas las métricas de la rúbrica para ambos modelos y grafica la curva ROC multiclase.»
 filas = {}
 fig, axes = plt.subplots(1, 2, figsize=(14, 6))
@@ -1001,7 +1002,6 @@ def plot_tsne(X, labels, ax, title="", seed=SEED):
     return emb
 
 
-# %%
 # Prompt (IA): «Visualiza con t-SNE los dos espacios de features coloreados por la
 # etiqueta y anota en el de TF-IDF el nombre de algunos productos: uno típico de varias
 # islas y uno de la zona mezclada.»
@@ -1206,23 +1206,6 @@ fig.savefig(FIG / "validacion_erp.png", bbox_inches="tight")
 #   haber visto esas etiquetas. El error más frecuente está en la frontera prevista en la
 #   taxonomía: de los productos que el ERP tiene como «Tinte», 11 se predijeron como
 #   «Cuidado capilar».
-
-# %% [markdown]
-# ## Bitácora de decisiones y ajustes
-#
-# Ajustes hechos **después de ver los resultados**, con su motivo:
-#
-# | # | Qué se vio | Ajuste | Por qué |
-# |---|---|---|---|
-# | 1 | Los clústeres de k-means agrupaban por marca (silhouette 0,02–0,04) | Taxonomía por *para qué sirve* el producto, definida a mano | Un clustering por marca no sirve como categoría de negocio |
-# | 2 | La primera grilla de χ² llegaba a k = 5000, pero cada fold tiene entre 3 760 y 4 674 n-gramas | Grilla de k bajada a 250–3500 | k > n° de features equivale a «todas» de forma implícita: la selección quedaba sin evaluar |
-# | 3 | Con la grilla de C hasta 10³, el óptimo de LogReg caía en el borde (C = 1000) | Grilla extendida hasta 10⁴ | Si el óptimo está en el borde no se sabe si hay uno mejor afuera; extendida, el óptimo (C ≈ 464) quedó en el interior |
-# | 4 | Con la grilla 250–3500, el mejor k cayó otra vez en el borde (3500): nunca se comparaba contra «sin selección» | Se agregó `all` a la grilla | Mismo criterio que con C; resultado: `all` es el mejor, χ² no aporta |
-# | 5 | Una revisión independiente señaló que el p de Wilcoxon es optimista (folds dependientes; mismos datos que el tuning) | Se agregó el t-test corregido de Nadeau–Bengio y se precisaron las limitaciones | El p corregido (≈ 4,3 × 10⁻⁶) es el defendible; la conclusión no cambia |
-# | 6 | «Extensiones y accesorios de cabello» llegó a 28 ejemplos | Fusionada en «Otros» | Regla fijada *antes* de etiquetar (mínimo 30); completarla a mano rompería la aleatoriedad |
-# | 7 | `RocCurveDisplay` cambió su API en sklearn 1.7 | Curvas ROC con `roc_curve` + matplotlib | Que el notebook corra igual en local (sklearn 1.9) y en Colab |
-# | 8 | El 10 × 10 tardó menos de 1 minuto | Se mantuvo 10 × 10 (no se bajó a 5 × 2) | Es la configuración recomendada por la rúbrica y el costo era bajo |
-# | 9 | Al agregar la aplicación al catálogo, el primer umbral de confianza se eligió mirando el test | Umbral elegido con predicciones out-of-fold del entrenamiento; el test solo lo confirma | Elegirlo con el test es usar el test para decidir: la cifra resultante sería optimista |
 
 # %% [markdown]
 # ## 11. Conclusiones
