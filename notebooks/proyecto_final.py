@@ -99,12 +99,6 @@ from IPython.display import Image, display
 
 display(Image(filename=str(ROOT / "reports/figures/diagrama_flujo.png"), width=900))
 
-# %%
-# Prompt (IA): «Carga el dataset etiquetado y el resumen de la revisión del etiquetado.»
-df = pd.read_csv(ROOT / "data/processed/productos_etiquetados.csv", dtype={"nombre": str, "etiqueta": str})
-resumen = json.loads((ROOT / "etiquetado/resumen.json").read_text())
-resumen
-
 # %% [markdown]
 # ## 2. Datos y etiquetado
 #
@@ -137,6 +131,12 @@ resumen
 #
 # **Clase fusionada.** «Extensiones y accesorios de cabello» tuvo 28 ejemplos, menos que
 # el mínimo de 30 fijado antes de etiquetar, y se fusionó en «Otros». Quedan **8 clases**.
+
+# %%
+# Prompt (IA): «Carga el dataset etiquetado y el resumen de la revisión del etiquetado.»
+df = pd.read_csv(ROOT / "data/processed/productos_etiquetados.csv", dtype={"nombre": str, "etiqueta": str})
+resumen = json.loads((ROOT / "etiquetado/resumen.json").read_text())
+resumen
 
 # %% [markdown]
 # **Procedencia de la muestra.** La celda siguiente contiene el código que define qué
@@ -265,48 +265,14 @@ pd.DataFrame({c: [f"{w} ({n})" for w, n in ws] for c, ws in top.items()})
 # y conectores («de», «para») aparecen en todas y aportan poco; TF-IDF les baja el peso
 # solo por aparecer en muchos documentos.
 
-# %%
-# Prompt (IA): «Mide qué porcentaje de las palabras del dataset no tiene vector en el Word2Vec preentrenado.»
-def vocabulary_coverage(texts, words: set[str]) -> dict:
-    """Qué tanto del catálogo cubre el modelo preentrenado."""
-    faltantes: Counter[str] = Counter()
-    total = sin_vector = productos_sin = 0
-    for text in texts:
-        toks = tokenize(text)
-        missing = [t for t in toks if t not in words]
-        total += len(toks)
-        sin_vector += len(missing)
-        faltantes.update(missing)
-        if len(missing) == len(toks):
-            productos_sin += 1
-    n = len(texts)
-    return {
-        "tokens_total": total,
-        "tokens_sin_vector": sin_vector,
-        "pct_tokens_sin_vector": round(100 * sin_vector / max(total, 1), 2),
-        "productos_sin_vector": productos_sin,
-        "pct_productos_sin_vector": round(100 * productos_sin / max(n, 1), 2),
-        "top_sin_vector": faltantes.most_common(20),
-    }
-
-
-words = set(np.load(W2V)["words"].tolist())
-cov = vocabulary_coverage(df["nombre"].tolist(), words)
-cov
-
-# %% [markdown]
-# **Cobertura de Word2Vec.** El 11,6 % de las palabras del dataset no tiene vector
-# preentrenado, y solo 4 productos (0,4 %) quedan sin ninguna. Pero las palabras sin
-# vector **son justamente las marcas** (alfaparf, rodher, amybeauty, masglo, thyms…): el
-# modelo preentrenado se construyó con texto general en español y nunca las vio. Esto
-# anticipa la principal debilidad de la técnica 2.
-
 # %% [markdown]
 # ### 3b. ¿Por qué supervisado y no no supervisado? Clustering exploratorio
 #
 # Antes de etiquetar a mano, la pregunta natural es si las categorías se pueden
 # **descubrir** sin etiquetas. Se aplica k-means [21] sobre TF-IDF de n-gramas de
-# caracteres (3–5) a los **10 777 productos** del catálogo deduplicado (los 1 000
+# caracteres (3–5) —cada nombre se representa por los fragmentos de 3 a 5 letras que
+# contiene, con más peso para los fragmentos raros; es la misma representación de la
+# técnica 1 y se detalla en la sección 4— a los **10 777 productos** del catálogo deduplicado (los 1 000
 # etiquetados más los 9 777 restantes) y se mide: (1) el **silhouette** [22] para varios
 # k, que indica si existen grupos naturales bien separados (va de −1 a 1; cerca de 0 =
 # grupos solapados); (2) qué agrupa cada clúster con k = 8, el mismo número de clases; y
@@ -471,7 +437,44 @@ pd.DataFrame({
 # %% [markdown]
 # Los vecinos tienen sentido en general («pestañas» → rizador, cejas, postizas), pero
 # también muestran ruido del corpus general («shampoo» → pedicure, manicure).
-#
+
+# %%
+# Prompt (IA): «Mide qué porcentaje de las palabras del dataset no tiene vector en el Word2Vec preentrenado.»
+def vocabulary_coverage(texts, words: set[str]) -> dict:
+    """Qué tanto del catálogo cubre el modelo preentrenado."""
+    faltantes: Counter[str] = Counter()
+    total = sin_vector = productos_sin = 0
+    for text in texts:
+        toks = tokenize(text)
+        missing = [t for t in toks if t not in words]
+        total += len(toks)
+        sin_vector += len(missing)
+        faltantes.update(missing)
+        if len(missing) == len(toks):
+            productos_sin += 1
+    n = len(texts)
+    return {
+        "tokens_total": total,
+        "tokens_sin_vector": sin_vector,
+        "pct_tokens_sin_vector": round(100 * sin_vector / max(total, 1), 2),
+        "productos_sin_vector": productos_sin,
+        "pct_productos_sin_vector": round(100 * productos_sin / max(n, 1), 2),
+        "top_sin_vector": faltantes.most_common(20),
+    }
+
+
+words = set(np.load(W2V)["words"].tolist())
+cov = vocabulary_coverage(df["nombre"].tolist(), words)
+cov
+
+# %% [markdown]
+# **Cobertura de Word2Vec.** El 11,6 % de las palabras del dataset no tiene vector
+# preentrenado, y solo 4 productos (0,4 %) quedan sin ninguna. Pero las palabras sin
+# vector **son justamente las marcas** (alfaparf, rodher, amybeauty, masglo, thyms…): el
+# modelo preentrenado se construyó con texto general en español y nunca las vio. Esto
+# anticipa la principal debilidad de la técnica 2.
+
+# %% [markdown]
 # ## 5. Feature selection
 #
 # Se usa **χ² (tipo filtro)** sobre TF-IDF: puntúa cada n-grama según su dependencia
@@ -481,6 +484,13 @@ pd.DataFrame({
 # Word2Vec toman valores negativos; además, la representación preentrenada ya es densa y
 # de baja dimensión (300), como admite la rúbrica para transfer learning.
 
+# %% [markdown]
+# ## 6. Separación de los datos y pipelines
+#
+# **Split.** 80 % entrenamiento (800) / 20 % test (200), estratificado. El test **no se
+# toca** hasta la sección 8: toda decisión (hiperparámetros, comparación) se toma con
+# validación cruzada sobre el 80 %.
+
 # %%
 # Prompt (IA): «Separa 80/20 estratificado con semilla fija; el test no se toca hasta el final.»
 X_train, X_test, y_train, y_test = train_test_split(
@@ -489,13 +499,7 @@ X_train, X_test, y_train, y_test = train_test_split(
 len(X_train), len(X_test)
 
 # %% [markdown]
-# **Split.** 80 % entrenamiento (800) / 20 % test (200), estratificado. El test **no se
-# toca** hasta la sección 8: toda decisión (hiperparámetros, comparación) se toma con
-# validación cruzada sobre el 80 %.
-#
-# ## 6. Pipelines
-#
-# Cada técnica es un `Pipeline` de sklearn [3], [18]: la extracción de features se ajusta **dentro
+# **Pipelines.** Cada técnica es un `Pipeline` de sklearn [3], [18]: la extracción de features se ajusta **dentro
 # de cada fold** de la validación cruzada. Si TF-IDF o χ² se ajustaran con todos los
 # datos antes de la CV, verían los folds de validación (data leakage).
 
@@ -938,7 +942,8 @@ def plot_roc_multiclass(y_true, y_proba, classes, ax, title=""):
     y_bin = label_binarize(y_true, classes=classes)
     for i, c in enumerate(classes):
         fpr, tpr, _ = roc_curve(y_bin[:, i], y_proba[:, i])
-        ax.plot(fpr, tpr, lw=1, label=f"{c} (AUC {auc(fpr, tpr):.2f})")
+        # tab10: un color distinto por clase (el ciclo por defecto repite colores con 8 clases).
+        ax.plot(fpr, tpr, lw=1, color=plt.cm.tab10(i % 10), label=f"{c} (AUC {auc(fpr, tpr):.2f})")
     fpr, tpr, _ = roc_curve(y_bin.ravel(), y_proba.ravel())
     ax.plot(fpr, tpr, ls="--", lw=2, c="black", label=f"micro-promedio (AUC {auc(fpr, tpr):.2f})")
     ax.plot([0, 1], [0, 1], c="grey", lw=0.8)
@@ -948,16 +953,38 @@ def plot_roc_multiclass(y_true, y_proba, classes, ax, title=""):
     ax.legend(fontsize=7)
 
 
-# Prompt (IA): «Calcula en el test todas las métricas de la rúbrica para ambos modelos y grafica la curva ROC multiclase.»
-filas = {}
-fig, axes = plt.subplots(1, 2, figsize=(14, 6))
-for ax, (name, search) in zip(axes, [("TF-IDF + LogReg", search_tfidf), ("Word2Vec + SVM", search_w2v)]):
-    est = search.best_estimator_
-    proba = est.predict_proba(X_test)
-    filas[name] = classification_metrics(y_test, est.predict(X_test), proba, est.classes_)
-    plot_roc_multiclass(y_test, proba, est.classes_, ax, title=name)
+# Prompt (IA): «Calcula en el test todas las métricas de la rúbrica para ambos modelos.»
+modelos = {"TF-IDF + LogReg": search_tfidf.best_estimator_, "Word2Vec + SVM": search_w2v.best_estimator_}
+proba_por_modelo = {name: est.predict_proba(X_test) for name, est in modelos.items()}
+pd.DataFrame({
+    name: classification_metrics(y_test, est.predict(X_test), proba_por_modelo[name], est.classes_)
+    for name, est in modelos.items()
+}).round(3)
+
+# %% [markdown]
+# **Curvas ROC (one-vs-rest).** Para cada clase se trata el problema como «esta clase
+# contra todas las demás» y se barre el umbral de la probabilidad predicha: cada punto es
+# (tasa de falsos positivos, tasa de verdaderos positivos) para un umbral. Una curva
+# pegada a la esquina superior izquierda separa bien esa clase; la diagonal gris es un
+# clasificador al azar (AUC = 0,5). La línea negra punteada es el **micro-promedio**: junta
+# todas las decisiones clase-contra-resto en una sola curva.
+
+# %%
+# Prompt (IA): «Grafica la curva ROC multiclase de ambos modelos en el test.»
+fig, axes = plt.subplots(1, 2, figsize=(14, 6), layout="constrained")
+for ax, (name, est) in zip(axes, modelos.items()):
+    plot_roc_multiclass(y_test, proba_por_modelo[name], est.classes_, ax, title=f"Curvas ROC en el test — {name}")
 fig.savefig(FIG / "roc.png", bbox_inches="tight")
-pd.DataFrame(filas).round(3)
+
+# %% [markdown]
+# **Lectura de la ROC.** TF-IDF + LogReg tiene curvas pegadas a la esquina superior
+# izquierda: micro-promedio AUC 0,98 y por clase entre 0,93 y 1,00. Las más bajas son
+# «Herramientas y equipos de cabello» (0,93) y «Piel y cuerpo» (0,94), las mismas clases
+# con peor F1. Word2Vec + SVM queda por debajo en todas (micro-promedio 0,93, por clase de
+# 0,81 a 0,99), con «Piel y cuerpo» (0,81) y «Pestañas y cejas» (0,86) como las peores.
+# Que el AUC sea alto mientras el F1 es más bajo indica que el modelo **ordena** bien
+# (la clase correcta suele tener una probabilidad alta) aunque al elegir la clase de
+# mayor probabilidad todavía se equivoque en las clases chicas.
 
 # %%
 # Prompt (IA): «Muestra el reporte por clase y la matriz de confusión del mejor modelo en el test.»
@@ -979,8 +1006,6 @@ fig.savefig(FIG / "matriz_confusion.png", bbox_inches="tight")
 #   herramientas se confunden con Uñas (pinzas, limas, lámparas) y con Cuidado capilar;
 #   Piel y cuerpo se confunde con Cuidado capilar porque comparten palabras («mascarilla»,
 #   «crema», «aceite») que significan cosas distintas según sea para la cara o el cabello.
-# - Los AUC altos con F1 más bajo indican que el modelo **ordena** bien las clases pero el
-#   umbral de decisión (argmax) falla en las minoritarias.
 
 # %% [markdown]
 # ## 9. Visualización con t-SNE (color = categoría)
@@ -1079,7 +1104,7 @@ pd.DataFrame([
 ])
 
 # %%
-# Prompt (IA): «Confirma en el test el umbral elegido y aplica el modelo final al resto del catálogo.»
+# Prompt (IA): «Confirma en el test, que no participó en la elección, el umbral elegido.»
 # Confirmación en el test (200 productos nunca vistos) con el umbral elegido.
 UMBRAL = 0.8
 proba_test = best.predict_proba(X_test)
@@ -1087,6 +1112,12 @@ conf_test = proba_test.max(axis=1)
 acierto_test = best.classes_[proba_test.argmax(axis=1)] == y_test.to_numpy()
 print(f"Test con confianza ≥ {UMBRAL}: {100 * (conf_test >= UMBRAL).mean():.1f} % de los productos, "
       f"accuracy {acierto_test[conf_test >= UMBRAL].mean():.3f}")
+
+# %% [markdown]
+# **Lectura del umbral.** Con predicciones out-of-fold, exigir confianza ≥ 0,8 deja el 72 %
+# de los productos con un **93,6 % de acierto** (contra 79,8 % sin umbral). En el test, que
+# no participó en la elección, ese umbral cubre el 77 % con un **96,8 %** de acierto: la
+# confianza del modelo es informativa y el umbral generaliza.
 
 # %%
 # Prompt (IA): «Aplica el modelo final reentrenado al catálogo restante y grafica confianza y predicciones por categoría.»
@@ -1110,6 +1141,13 @@ axes[1].set_xlabel("productos")
 axes[1].set_ylabel("")
 fig.savefig(FIG / "catalogo_completo.png", bbox_inches="tight")
 catalogo["revision"].value_counts()
+
+# %% [markdown]
+# **Lectura del catálogo.** De los 9 777 productos, **7 698 (78,7 %) se categorizan
+# automáticamente** y **2 079 (21,3 %) van a revisión manual**. Revisar 2 079 productos en
+# vez de 9 777 reduce el trabajo manual en ~79 %. «Otros» y «Piel y cuerpo» tienen la mayor
+# proporción de revisión manual; «Coloración capilar» casi no la necesita. Coincide con el
+# F1 por clase del test.
 
 # %%
 # Prompt (IA): «Dibuja un mapa t-SNE del catálogo completo coloreado por categoría predicha y por confianza.»
@@ -1166,6 +1204,12 @@ pd.concat({
     "más dudosas": catalogo.nsmallest(8, "confianza")[cols].reset_index(drop=True),
 }, axis=1).round(2)
 
+# %% [markdown]
+# **Lectura de los extremos.** Las predicciones más seguras son líneas de producto con
+# marca y vocabulario inconfundibles; las más dudosas son productos realmente ambiguos o
+# fuera de la taxonomía («SAL DE LAVANDA», «ENVASE PARA GUARDAR PEGAMENTO»): justo los que
+# conviene que revise una persona.
+
 # %%
 # Prompt (IA): «Compara las predicciones con las categorías que la tienda ya tenía en el ERP, con un mapa de calor.»
 # Validación externa: productos que el personal de la tienda ya había categorizado en el
@@ -1190,23 +1234,11 @@ ax.set_title("Validación externa: ERP vs. modelo")
 fig.savefig(FIG / "validacion_erp.png", bbox_inches="tight")
 
 # %% [markdown]
-# **Lectura.**
-# - **Umbral.** Con predicciones out-of-fold, exigir confianza ≥ 0,8 deja el 72 % de los
-#   productos con un **93,6 % de acierto** (contra 79,8 % sin umbral). En el test, que no
-#   participó en la elección, ese umbral cubre el 77 % con un **96,8 %** de acierto: la
-#   confianza del modelo es informativa y el umbral generaliza.
-# - **Catálogo.** De los 9 777 productos, **7 698 (78,7 %) se categorizan
-#   automáticamente** y **2 079 (21,3 %) van a revisión manual**. Revisar 2 079 productos
-#   en vez de 9 777 reduce el trabajo manual en ~79 %.
-# - **Dónde duda.** «Otros» y «Piel y cuerpo» tienen la mayor proporción de revisión
-#   manual; «Coloración capilar» casi no la necesita. Coincide con el F1 por clase del
-#   test. Las predicciones más dudosas son productos realmente ambiguos o fuera de la
-#   taxonomía («SAL DE LAVANDA», «ENVASE PARA GUARDAR PEGAMENTO»).
-# - **Validación externa.** De los 534 productos que el personal de la tienda ya había
-#   categorizado (todos capilares), el modelo predijo como capilares el **93,3 %**, sin
-#   haber visto esas etiquetas. El error más frecuente está en la frontera prevista en la
-#   taxonomía: de los productos que el ERP tiene como «Tinte», 11 se predijeron como
-#   «Cuidado capilar».
+# **Lectura de la validación externa.** De los 534 productos que el personal de la tienda
+# ya había categorizado (todos capilares), el modelo predijo como capilares el **93,3 %**,
+# sin haber visto esas etiquetas. El error más frecuente está en la frontera prevista en la
+# taxonomía: de los productos que el ERP tiene como «Tinte», 11 se predijeron como
+# «Cuidado capilar».
 
 # %% [markdown]
 # ## 11. Conclusiones

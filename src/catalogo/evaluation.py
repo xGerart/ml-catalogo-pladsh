@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy.stats import wilcoxon
@@ -148,7 +149,8 @@ def plot_roc_multiclass(y_true, y_proba, classes, ax, title=""):
     y_bin = label_binarize(y_true, classes=classes)
     for i, c in enumerate(classes):
         fpr, tpr, _ = roc_curve(y_bin[:, i], y_proba[:, i])
-        ax.plot(fpr, tpr, lw=1, label=f"{c} (AUC {auc(fpr, tpr):.2f})")
+        # tab10: un color distinto por clase (el ciclo por defecto repite colores con 8 clases).
+        ax.plot(fpr, tpr, lw=1, color=plt.cm.tab10(i % 10), label=f"{c} (AUC {auc(fpr, tpr):.2f})")
     fpr, tpr, _ = roc_curve(y_bin.ravel(), y_proba.ravel())
     ax.plot(fpr, tpr, ls="--", lw=2, c="black", label=f"micro-promedio (AUC {auc(fpr, tpr):.2f})")
     ax.plot([0, 1], [0, 1], c="grey", lw=0.8)
