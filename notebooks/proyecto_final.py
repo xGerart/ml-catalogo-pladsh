@@ -6,11 +6,11 @@
 # Prompt (IA): «Arma la celda de setup para que el notebook corra igual en Colab y en
 # local: en Colab clona el repo para tener los datos publicados; fija la semilla. Todo el
 # código del análisis se define dentro del notebook.»
+import os
 import sys
 from pathlib import Path
 
 if "google.colab" in sys.modules:
-    import os
     import subprocess
     subprocess.run(["git", "clone", "-q", "https://github.com/xGerart/ml-catalogo-pladsh.git"], check=False)
     os.chdir("ml-catalogo-pladsh")
@@ -52,7 +52,8 @@ warnings.filterwarnings("ignore", message="k=.*is greater than n_features")
 # Raíz del proyecto: la carpeta clonada en Colab, o la carpeta padre si se ejecuta desde notebooks/.
 ROOT = Path.cwd() if (Path.cwd() / "data").exists() else Path.cwd().parent
 FIG = ROOT / "reports/figures"
-W2V = str(ROOT / "data/processed/w2v_vocab.npz")
+# Ruta relativa: no deja la ruta local de la máquina en las salidas del notebook.
+W2V = os.path.relpath(ROOT / "data/processed/w2v_vocab.npz")
 np.random.seed(SEED)
 print(f"Python {sys.version.split()[0]} · scikit-learn {sklearn.__version__} · numpy {np.__version__} · "
       f"pandas {pd.__version__} · semilla {SEED}")
