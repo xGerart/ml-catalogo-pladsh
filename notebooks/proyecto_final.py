@@ -751,6 +751,106 @@ fig.savefig(FIG / "optimizacion.png", bbox_inches="tight")
 #   irrelevantes. Es un resultado, no un error: se comparó la selección contra no
 #   seleccionar y los datos dicen que conviene conservar todos los n-gramas.
 
+# %% [markdown]
+# **¿Dónde cae el óptimo dentro de la grilla?** El valor absoluto de C no se compara entre
+# técnicas: LogReg y SVM minimizan pérdidas distintas (logística vs. *hinge*) sobre
+# representaciones de escala distinta (TF-IDF de norma 1 repartida en miles de n-gramas vs.
+# 300 dimensiones estandarizadas), así que «C = 464» y «C = 7,2» no están en la misma unidad.
+# Lo que sí se compara es **la posición del óptimo en su propio recorrido**: si queda en el
+# interior, dónde empieza a saturar el F1 de entrenamiento y qué brecha deja. Las tablas
+# recorren C con los demás hiperparámetros en su mejor valor; los mapas de calor muestran la
+# grilla completa (TF-IDF con n-gramas 2–5).
+
+# %%
+# Prompt (IA): «Muestra el recorrido completo de C de cada técnica (los demás hiperparámetros
+# en su mejor valor) con F1 de validación y de entrenamiento, la brecha y la posición en la
+# grilla; y mapas de calor del F1 de validación de C × k (LogReg) y C × γ (SVM) con el
+# óptimo marcado.»
+def recorrido(search, param):
+    """F1 de validación y de entrenamiento para cada valor de param, con los demás en su mejor valor."""
+    r = pd.DataFrame(search.cv_results_)
+    for otro, mejor in search.best_params_.items():
+        if otro != param:
+            r = r[r[f"param_{otro}"].astype(str) == str(mejor)]
+    r = r.assign(valor=r[f"param_{param}"].astype(float)).sort_values("valor")
+    return pd.DataFrame({
+        "posición": [f"{i} de {len(r)}" for i in range(1, len(r) + 1)],
+        "C": r["valor"].map("{:.4g}".format).values,
+        "λ = 1/C": (1 / r["valor"]).map("{:.4g}".format).values,
+        "F1 validación": r["mean_test_score"].round(3).values,
+        "± std": r["std_test_score"].round(3).values,
+        "F1 entrenamiento": r["mean_train_score"].round(3).values,
+        "brecha": (r["mean_train_score"] - r["mean_test_score"]).round(3).values,
+        "": np.where(np.isclose(r["valor"], search.best_params_[param]), "← óptimo", ""),
+    })
+
+
+def mapa_grilla(search, filas, columnas, ax, fijos=None, orden=None, etiquetas=None, titulo=""):
+    """Mapa de calor del F1 de validación sobre dos hiperparámetros, con el óptimo recuadrado.
+
+    orden fija el orden de las columnas (p. ej. γ = scale entre 10⁻³ y 10⁻², donde cae su valor).
+    """
+    r = pd.DataFrame(search.cv_results_)
+    for p, v in (fijos or {}).items():
+        r = r[r[f"param_{p}"].astype(str) == str(v)]
+    tabla = r.pivot_table(index=r[f"param_{filas}"].astype(float), columns=r[f"param_{columnas}"].astype(str),
+                          values="mean_test_score", sort=False)
+    tabla = tabla.sort_index()[orden or sorted(tabla.columns, key=lambda c: (c == "all", pd.to_numeric(c, errors="coerce")))]
+    im = ax.imshow(tabla.values, cmap="viridis", aspect="auto")
+    ax.set_xticks(range(tabla.shape[1]), [(etiquetas or {}).get(c, c) for c in tabla.columns])
+    ax.set_yticks(range(tabla.shape[0]), [f"{c:.3g}" for c in tabla.index])
+    for (i, j), v in np.ndenumerate(tabla.values):
+        ax.text(j, i, f"{v:.3f}", ha="center", va="center", fontsize=8, color="white" if v < tabla.values.mean() else "black")
+    i = list(tabla.index).index(min(tabla.index, key=lambda c: abs(c - search.best_params_[filas])))
+    j = list(tabla.columns).index(str(search.best_params_[columnas]))
+    ax.add_patch(plt.Rectangle((j - 0.5, i - 0.5), 1, 1, fill=False, ec="red", lw=2.5))
+    ax.set_xlabel(columnas.split("__")[1]); ax.set_ylabel("C"); ax.set_title(titulo)
+    plt.colorbar(im, ax=ax, label="F1-macro validación")
+
+
+print("TF-IDF + LogReg — recorrido de C (k = all, n-gramas 2–5)")
+display(recorrido(search_tfidf, "clf__C"))
+print("Word2Vec + SVM — recorrido de C (γ = 10⁻³)")
+display(recorrido(search_w2v, "clf__C"))
+Z = search_w2v.best_estimator_[:2].transform(X_train)
+gamma_scale = 1 / (Z.shape[1] * Z.var())
+print(f"γ = 'scale' equivale a 1 / (n_features · Var(X)) = 1 / ({Z.shape[1]} · {Z.var():.3f}) = {gamma_scale:.4f}")
+
+fig, axes = plt.subplots(1, 2, figsize=(15, 5.5), layout="constrained")
+mapa_grilla(search_tfidf, "clf__C", "chi2__k", axes[0], fijos={"tfidf__ngram_range": (2, 5)},
+            titulo="TF-IDF + LogReg: F1 validación, C × k (n-gramas 2–5)")
+mapa_grilla(search_w2v, "clf__C", "clf__gamma", axes[1], orden=["0.001", "scale", "0.01"],
+            etiquetas={"scale": f"scale (≈ {gamma_scale:.4f})"}, titulo="Word2Vec + SVM: F1 validación, C × γ")
+fig.savefig(FIG / "grilla_mapas.png", bbox_inches="tight")
+plt.show()
+
+# %% [markdown]
+# **Lectura: dónde cae cada óptimo.**
+# - **Los dos extremos de C se comportan igual en ambas técnicas.** Con C ≤ 0,05
+#   (regularización muy fuerte) el F1 de entrenamiento y el de validación valen 0,06: el
+#   modelo predice una sola clase (**subajuste**). Con C grande el F1 de entrenamiento llega
+#   a ≈ 1 y la validación deja de mejorar: ya no queda regularización que quitar.
+# - **LogReg, C ≈ 464 (posición 8 de 10).** El entrenamiento ya está en 1,000 desde
+#   C ≈ 21,5, y entre 21,5 y 464 la validación es una **meseta** (0,737 → 0,739: una
+#   diferencia de 0,002 frente a una desviación de 0,045). Pasado 464 la validación **baja**
+#   (0,726 y 0,716), así que el óptimo está en el interior. Es un C alto, pero no es un
+#   sobreajuste mayor: cualquier C de la meseta da el mismo F1, y la brecha
+#   (≈ 0,26) es la misma que con C = 21,5.
+# - **SVM, C ≈ 7,2 (posición 5 de 8).** Es el último valor antes de que el entrenamiento
+#   sature (0,977; desde C ≈ 37 pasa a 0,996). Con más C la validación queda plana
+#   (0,633–0,634), sin mejora, y la brecha crece de 0,34 a 0,36.
+# - **Por qué no comparar 464 con 7,2.** Las pérdidas y la escala de los datos son distintas,
+#   así que C no está en la misma unidad. Leídos en su propio recorrido, los dos óptimos caen
+#   en el mismo lugar: donde el F1 de entrenamiento ya se acerca a 1 y la validación deja
+#   de subir. De hecho, la brecha del SVM (0,34) es **mayor** que la de LogReg (0,26).
+# - **γ del SVM.** γ = 10⁻² cae a ≈ 0,45 con cualquier C: el kernel es demasiado estrecho y
+#   la frontera se ajusta punto a punto. `scale` (≈ 0,0033, el valor por defecto) da 0,632 y
+#   10⁻³ da 0,640: un γ menor (frontera más suave) conviene. 10⁻³ es el borde de la grilla.
+#   Optuna buscó γ en continuo entre 10⁻⁴ y 10⁻¹ (§7b) y encontró su mejor valor en
+#   γ ≈ 0,0016, junto a ese borde, así que el óptimo no estaba más abajo.
+# - **k de χ² (mapa izquierdo).** Para cada C razonable (≥ 4,6) la columna `all` es la mejor
+#   o empata con 3500: lo mismo que mostró la curva de k.
+
 # %%
 # Prompt (IA): «Grafica las curvas de aprendizaje como error contra m (tamaño del
 # entrenamiento) para ambas técnicas, marcando la brecha entre entrenamiento y validación.»
