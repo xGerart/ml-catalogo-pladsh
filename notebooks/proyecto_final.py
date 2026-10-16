@@ -115,11 +115,11 @@ resumen
 # entrenamiento y en test, la métrica sale inflada (*data leakage*). Quedan 10 777
 # productos únicos.
 #
-# **Taxonomía.** Se exploró con k-means sobre n-gramas de caracteres
-# (`notebooks/01_eda_taxonomia.ipynb`). Hallazgo: los clústeres agrupan por **marca**
-# (ITELY, ALFAPARF, COQUETAS) y no por tipo de producto (silhouette 0,02–0,04), así que
-# la taxonomía se definió con criterio humano por *para qué sirve* el producto
-# (`etiquetado/taxonomia.md`). Ese mismo hallazgo justifica un modelo supervisado.
+# **Taxonomía.** Se exploró con k-means sobre n-gramas de caracteres (sección 3b).
+# Hallazgo: los clústeres agrupan por **marca** (ALFAPARF, Salon In) o por una palabra
+# frecuente, y no por tipo de producto (silhouette 0,02–0,04), así que la taxonomía se
+# definió con criterio humano por *para qué sirve* el producto (`etiquetado/taxonomia.md`).
+# Ese mismo hallazgo justifica un modelo supervisado.
 #
 # **Muestra y etiquetado asistido.** 1 000 productos al azar (semilla 42) del catálogo
 # deduplicado. Un LLM (Claude [7]) propuso una etiqueta por producto con un prompt fijo
@@ -213,6 +213,106 @@ cov
 # vector **son justamente las marcas** (alfaparf, rodher, amybeauty, masglo, thyms…): el
 # modelo preentrenado se construyó con texto general en español y nunca las vio. Esto
 # anticipa la principal debilidad de la técnica 2.
+
+# %% [markdown]
+# ### 3b. ¿Por qué supervisado y no no supervisado? Clustering exploratorio
+#
+# Antes de etiquetar a mano, la pregunta natural es si las categorías se pueden
+# **descubrir** sin etiquetas. Se aplica k-means [21] sobre TF-IDF de n-gramas de
+# caracteres (3–5) a los **10 777 productos** del catálogo deduplicado (los 1 000
+# etiquetados más los 9 777 restantes) y se mide: (1) el **silhouette** [22] para varios
+# k, que indica si existen grupos naturales bien separados (va de −1 a 1; cerca de 0 =
+# grupos solapados); (2) qué agrupa cada clúster con k = 8, el mismo número de clases; y
+# (3) cuánto coinciden esos clústeres con las etiquetas humanas de los 1 000 productos,
+# con el **ARI** [23] (*adjusted Rand index*: 0 = coincidencia al azar, 1 = idénticos), la
+# **NMI** (información mutua normalizada) y la **pureza** (fracción de productos que
+# pertenecen a la clase mayoritaria de su clúster).
+
+# %%
+# Prompt (IA): «Agrega al EDA el clustering exploratorio: k-means sobre TF-IDF de n-gramas
+# de caracteres del catálogo completo, silhouette para varios k, y compara los clústeres de
+# k = 8 con las etiquetas humanas (ARI, NMI, pureza) para justificar el enfoque supervisado.»
+from sklearn.cluster import KMeans
+from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score, silhouette_score
+
+catalogo_completo = pd.concat(
+    [df[["id", "nombre"]], pd.read_csv(ROOT / "data/processed/catalogo_sin_etiquetar.csv")[["id", "nombre"]]],
+    ignore_index=True,
+)
+vec_km = TfidfVectorizer(analyzer="char_wb", ngram_range=(3, 5), min_df=3, sublinear_tf=True)
+X_km = vec_km.fit_transform(catalogo_completo["nombre"])
+
+# Silhouette sobre una muestra de 3 000 puntos: calcularlo con los 10 777 es cuadrático en memoria.
+silhouette = {}
+for k in range(6, 21, 2):
+    grupos = KMeans(n_clusters=k, n_init=5, random_state=SEED).fit_predict(X_km)
+    silhouette[k] = silhouette_score(X_km, grupos, sample_size=3000, random_state=SEED)
+
+# k = 8: el mismo número de clases que la taxonomía, para comparar en igualdad de condiciones.
+km = KMeans(n_clusters=8, n_init=10, random_state=SEED).fit(X_km)
+catalogo_completo["cluster"] = km.labels_
+terminos = np.array(vec_km.get_feature_names_out())
+
+
+def palabra_clave(c):
+    """La palabra más frecuente del clúster que contiene su n-grama de mayor peso en el centroide."""
+    ngrama = terminos[km.cluster_centers_[c].argmax()].strip()
+    nombres = catalogo_completo.loc[catalogo_completo["cluster"] == c, "nombre"]
+    palabras = Counter(t for n in nombres for t in tokenize(n) if ngrama in t)
+    return palabras.most_common(1)[0][0] if palabras else ngrama
+
+
+nombres_cluster = {c: f"«{palabra_clave(c)}» ({(km.labels_ == c).sum()} productos)" for c in range(8)}
+
+# Comparación con las etiquetas humanas de los 1 000 productos etiquetados.
+comp = df.merge(catalogo_completo[["id", "cluster"]], on="id")
+cruce = pd.crosstab(comp["cluster"].map(nombres_cluster), comp["etiqueta"])
+ari = adjusted_rand_score(comp["etiqueta"], comp["cluster"])
+nmi = normalized_mutual_info_score(comp["etiqueta"], comp["cluster"])
+pureza = cruce.max(axis=1).sum() / cruce.to_numpy().sum()
+print(f"Tamaño de los clústeres (k = 8): {catalogo_completo['cluster'].value_counts().tolist()}")
+print(f"Contra las etiquetas humanas: ARI = {ari:.3f} · NMI = {nmi:.2f} · pureza = {pureza:.2f} "
+      f"(predecir siempre la clase mayor: {df['etiqueta'].value_counts(normalize=True).max():.2f})")
+
+fig, axes = plt.subplots(1, 2, figsize=(16, 5.5), layout="constrained", gridspec_kw={"width_ratios": [1, 2.2]})
+axes[0].plot(list(silhouette), list(silhouette.values()), marker="o")
+axes[0].set_ylim(0, 0.2)
+axes[0].set_xlabel("k (número de clústeres)")
+axes[0].set_ylabel("silhouette")
+axes[0].set_title("Silhouette de k-means: casi 0 para todo k")
+im = axes[1].imshow(cruce.to_numpy(), cmap="Blues", aspect="auto")
+axes[1].set_xticks(range(len(cruce.columns)), cruce.columns, rotation=30, ha="right")
+axes[1].set_yticks(range(len(cruce.index)), cruce.index)
+for (r, c), v in np.ndenumerate(cruce.to_numpy()):
+    if v:
+        axes[1].text(c, r, v, ha="center", va="center", fontsize=8,
+                     color="white" if v > cruce.to_numpy().max() / 2 else "black")
+axes[1].set_xlabel("etiqueta humana")
+axes[1].set_ylabel("clúster: palabra que lo define (tamaño en el catálogo)")
+axes[1].set_title(f"Clústeres k = 8 vs. etiquetas humanas (ARI = {ari:.3f})")
+fig.savefig(FIG / "clustering.png", bbox_inches="tight")
+
+# %% [markdown]
+# **Lectura: el no supervisado no encuentra las categorías.**
+# - **No hay grupos naturales.** El silhouette queda entre 0,02 y 0,04 para todo k de 6 a
+#   20: los clústeres están casi totalmente solapados.
+# - **Un clúster se lleva casi todo.** Con k = 8, un solo clúster junta 7 698 productos
+#   (71 %), definido por conectores y unidades («de», «ml»): un cajón de sastre.
+# - **Los demás agrupan por marca o por una palabra, no por tipo de producto.** Hay un
+#   clúster ALFAPARF y otro de la marca Salon In (SALONIN) que mezclan tintes, shampoo y tratamientos (Coloración
+#   y Cuidado capilar juntos); y «Uñas» queda partida en tres clústeres (esmalte, nails,
+#   acrílico).
+# - **Contra las etiquetas humanas, coincidencia de azar:** ARI ≈ 0,008 (0 = azar), NMI ≈
+#   0,30 y pureza 0,43, apenas sobre el 0,32 que se obtiene diciendo siempre «Uñas». El
+#   modelo supervisado de la sección 8 llega a accuracy 0,825 y F1-macro 0,75 en un test
+#   que nunca vio.
+#
+# **Conclusión metodológica.** Las categorías que la tienda necesita están definidas por
+# el **negocio** (para qué sirve el producto), y esa información no está en la estructura
+# de similitud de los nombres: el algoritmo encuentra marcas y palabras frecuentes. Por
+# eso el problema se plantea como **clasificación supervisada**: se le enseña al modelo
+# la definición con 1 000 ejemplos etiquetados. El clustering se usó solo como exploración
+# para entender el catálogo y definir la taxonomía.
 
 # %% [markdown]
 # ## 4. Feature extraction
@@ -850,6 +950,9 @@ fig.savefig(FIG / "validacion_erp.png", bbox_inches="tight")
 # 7. **χ² no mejoró el modelo**: el mejor resultado fue sin selección (0,739) y la
 #    diferencia con k = 3500 es menor que la variación entre folds. Con regresión
 #    logística regularizada conviene conservar todos los n-gramas.
+# 8. **El enfoque supervisado está justificado**: k-means sobre el catálogo completo no
+#    encuentra grupos naturales (silhouette 0,02–0,04), agrupa por marca o por palabras
+#    frecuentes y coincide con las etiquetas humanas al nivel del azar (ARI ≈ 0,008).
 #
 # **Limitaciones:** una sola tienda; etiquetas de un solo revisor (sin acuerdo entre
 # anotadores); scores de CV repetida no independientes; la taxonomía es de esta tienda.
@@ -895,3 +998,9 @@ fig.savefig(FIG / "validacion_erp.png", bbox_inches="tight")
 # [19] T. Akiba, S. Sano, T. Yanase, T. Ohta, and M. Koyama, "Optuna: A next-generation hyperparameter optimization framework," in *Proc. 25th ACM SIGKDD Int. Conf. Knowl. Discovery Data Mining*, 2019, pp. 2623–2631.
 #
 # [20] J. Bergstra, R. Bardenet, Y. Bengio, and B. Kégl, "Algorithms for hyper-parameter optimization," in *Adv. Neural Inf. Process. Syst. 24*, 2011, pp. 2546–2554.
+#
+# [21] S. Lloyd, "Least squares quantization in PCM," *IEEE Trans. Inf. Theory*, vol. 28, no. 2, pp. 129–137, 1982.
+#
+# [22] P. J. Rousseeuw, "Silhouettes: A graphical aid to the interpretation and validation of cluster analysis," *J. Comput. Appl. Math.*, vol. 20, pp. 53–65, 1987.
+#
+# [23] L. Hubert and P. Arabie, "Comparing partitions," *J. Classification*, vol. 2, no. 1, pp. 193–218, 1985.

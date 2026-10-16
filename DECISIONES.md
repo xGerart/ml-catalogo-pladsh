@@ -18,6 +18,7 @@ las del notebook final (`notebooks/proyecto_final.ipynb`, semilla 42).
 | Decisión | Por qué | Pregunta probable |
 |---|---|---|
 | Taxonomía definida **a mano** | k-means agrupaba por marca, no por tipo de producto (silhouette 0,02–0,04) | *¿Por qué no usaste los clústeres como categorías?* → Agrupan «todo ALFAPARF» junto: tintes, shampoo y aceites. No sirven como categoría de negocio |
+| **Supervisado** y no no supervisado (sección 3b del notebook) | k-means (k = 8) sobre los 10 777 productos: un clúster de «de» se lleva el 71 %, los demás son marcas o una palabra; contra las etiquetas humanas ARI ≈ 0,008 (azar), pureza 0,43 | *¿Por qué no clustering?* → Las categorías las define el negocio (para qué sirve el producto) y esa información no está en la similitud de los nombres; el algoritmo encuentra marcas. Hay que enseñárselo con ejemplos etiquetados |
 | Separar **Coloración** de **Cuidado capilar** | Juntas serían la clase más grande y son rubros distintos en la tienda | Frontera: matizantes (shampoo matizante = cuidado; tinte = coloración) |
 | Regla «la herramienta va a su dominio» | Un pincel de uñas es de uñas, aunque sea «herramienta» | *¿Por qué la cosmetiquera es Maquillaje?* → Misma regla: accesorio del dominio maquillaje |
 | **Etiquetado asistido** (LLM propone, humano revisa) | 1 000 etiquetas en ~40 min de revisión en vez de ~2 h | *¿Son confiables las etiquetas?* → Revisión humana de las 1 000 (0,4 % corregido) + control externo con categorías del ERP (96,7 %) |
