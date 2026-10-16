@@ -104,8 +104,7 @@ resumen
 # %% [markdown]
 # ## 2. Datos y etiquetado
 #
-# **Origen.** Export de solo lectura del ERP en producción (2026-10-06); la consulta y
-# todo el código de preparación de los datos están en el **Anexo A**. Solo se usan
+# **Origen.** Export de solo lectura del ERP en producción (2026-10-06). Solo se usan
 # `id` y `nombre`; precio, ventas y código de barras se descartaron a propósito: las
 # ventas no dicen qué *es* un producto y un producto nuevo no las tiene; el código de
 # barras es un identificador arbitrario.
@@ -134,6 +133,48 @@ resumen
 #
 # **Clase fusionada.** «Extensiones y accesorios de cabello» tuvo 28 ejemplos, menos que
 # el mínimo de 30 fijado antes de etiquetar, y se fusionó en «Otros». Quedan **8 clases**.
+
+# %% [markdown]
+# **Procedencia de la muestra.** La celda siguiente contiene el código que define qué
+# productos se etiquetaron: normalización y deduplicado de los nombres **antes** de
+# muestrear (para que un mismo texto nunca quede en entrenamiento y en test), y muestreo
+# aleatorio simple de 1 000 productos con la semilla 42. Como verificación, reconstruye la
+# muestra a partir de los datos publicados (los 1 000 etiquetados más los 9 777 restantes)
+# y comprueba que salen exactamente los mismos productos.
+
+# %%
+# Prompt (IA): «Muestra cómo se obtuvo la muestra de 1 000: normalización y deduplicado de
+# nombres antes de muestrear y muestreo aleatorio simple con semilla; verifica que se
+# reconstruye exactamente desde los datos publicados.»
+def normalize_name(name: str) -> str:
+    """Mayúsculas y espacios colapsados: dos nombres que solo difieren en eso son el mismo."""
+    return re.sub(r"\s+", " ", str(name)).strip().upper()
+
+
+def deduplicate(df: pd.DataFrame) -> pd.DataFrame:
+    """Una fila por nombre normalizado, conservando el id menor.
+
+    Se hace ANTES de muestrear: así un mismo texto nunca queda en train y test a la vez.
+    """
+    out = df[["id", "nombre"]].assign(nombre=df["nombre"].map(normalize_name))
+    out = out[out["nombre"] != ""]
+    out = out.sort_values("id").drop_duplicates("nombre", keep="first")
+    return out.reset_index(drop=True)
+
+
+def sample_for_labeling(df: pd.DataFrame, n: int = 1000, seed: int = SEED) -> pd.DataFrame:
+    """Muestra aleatoria simple y reproducible para etiquetar."""
+    if n > len(df):
+        raise ValueError(f"Se pidieron {n} productos pero el catálogo tiene {len(df)}")
+    return df.sample(n=n, random_state=seed).reset_index(drop=True)
+
+
+catalogo_dedup = deduplicate(pd.concat(
+    [df[["id", "nombre"]], pd.read_csv(ROOT / "data/processed/catalogo_sin_etiquetar.csv")[["id", "nombre"]]]
+))
+muestra = sample_for_labeling(catalogo_dedup, n=1000)
+print(f"Catálogo deduplicado: {len(catalogo_dedup)} productos únicos")
+print(f"Muestra reconstruida con semilla {SEED} idéntica a los 1 000 etiquetados: {set(muestra['id']) == set(df['id'])}")
 
 # %%
 # Prompt (IA): «Muestra el prompt con el que se propusieron las etiquetas.»
@@ -1218,344 +1259,6 @@ fig.savefig(FIG / "validacion_erp.png", bbox_inches="tight")
 #
 # **Limitaciones:** una sola tienda; etiquetas de un solo revisor (sin acuerdo entre
 # anotadores); scores de CV repetida no independientes; la taxonomía es de esta tienda.
-
-# %% [markdown]
-# ## Anexo A. Preparación de los datos (código completo)
-#
-# Este anexo contiene **todo el código que produjo los archivos de `data/processed/`** que
-# usa el notebook: extracción, limpieza, muestreo, etiquetado asistido y recorte de
-# Word2Vec. Así el flujo completo, de la base de datos al dataset, queda dentro del
-# notebook. Se ejecuta y se **verifica** todo lo que se puede comprobar con los datos
-# publicados. Hay dos pasos que no se pueden repetir en Colab: los que necesitan el export
-# privado del ERP (`data/raw/`) y la planilla de revisión (`data/interim/`), que se
-# ejecutan solo si esos archivos existen, y la descarga de 1,1 GB de Word2Vec, que queda
-# desactivada por defecto.
-#
-# ### A.1 Extracción desde el ERP
-#
-# El catálogo se exportó el 2026-10-06 de la base PostgreSQL del ERP en producción, con
-# una consulta **de solo lectura** sobre el esquema de la tienda. No se incluye la
-# conexión porque es una base de producción con credenciales privadas; en su lugar se
-# publican los datos resultantes (solo `id`, `nombre` y la categoría actual del ERP, sin
-# precios, ventas ni clientes). La consulta exportó también columnas de ventas, precio y
-# marca para la exploración inicial; se descartaron por los motivos de la sección 2.
-#
-# ```sql
-# SET search_path TO <esquema_de_la_tienda>;
-# COPY (
-#   WITH ventas AS (
-#     SELECT i.product_id,
-#            count(*) AS lineas_vendidas,
-#            count(DISTINCT i.voucher_id) AS tickets,
-#            sum(i.base_units) AS unidades_vendidas,
-#            count(DISTINCT (v.created_at AT TIME ZONE 'America/Guayaquil')::date) AS dias_con_venta,
-#            round(avg(i.unit_price), 2) AS precio_promedio_vendido,
-#            min((v.created_at AT TIME ZONE 'America/Guayaquil')::date) AS primera_venta,
-#            max((v.created_at AT TIME ZONE 'America/Guayaquil')::date) AS ultima_venta
-#     FROM sales_voucher_items i
-#     JOIN sales_vouchers v ON v.id = i.voucher_id
-#     WHERE v.status = 'completed'
-#     GROUP BY i.product_id
-#   )
-#   SELECT p.id, p.name AS nombre, p.description AS descripcion, p.product_type AS tipo,
-#          c.name AS categoria, b.name AS marca, p.unit_type AS unidad,
-#          p.sale_price AS precio_venta, p.is_kit, p.is_active, p.is_for_sale,
-#          p.tracking_mode, p.supplier_code AS codigo_proveedor,
-#          (p.created_at AT TIME ZONE 'America/Guayaquil')::date AS creado,
-#          COALESCE(v.lineas_vendidas, 0) AS lineas_vendidas,
-#          COALESCE(v.tickets, 0) AS tickets,
-#          COALESCE(v.unidades_vendidas, 0) AS unidades_vendidas,
-#          COALESCE(v.dias_con_venta, 0) AS dias_con_venta,
-#          v.precio_promedio_vendido, v.primera_venta, v.ultima_venta
-#   FROM inventory_product p
-#   LEFT JOIN inventory_category c ON c.id = p.category_id
-#   LEFT JOIN inventory_brand b ON b.id = p.brand_id
-#   LEFT JOIN ventas v ON v.product_id = p.id
-#   ORDER BY p.id
-# ) TO STDOUT WITH (FORMAT csv, HEADER true, ENCODING 'UTF8');
-# ```
-#
-# ### A.2 Limpieza y deduplicado
-#
-# Se normaliza cada nombre (mayúsculas, espacios colapsados), se descartan vacíos y se deja
-# un producto por nombre (el de `id` menor), **antes** de muestrear: así el mismo texto
-# nunca cae en entrenamiento y en test a la vez.
-
-# %%
-# Prompt (IA): «Escribe las funciones que normalizan los nombres, deduplican el catálogo
-# conservando el id menor y cargan el export del ERP con solo los productos activos;
-# verifica sobre los datos publicados que no queden nombres repetidos.»
-RAW = ROOT / "data/raw/productos.csv"  # export privado del ERP: no se publica
-
-
-def normalize_name(name: str) -> str:
-    """Mayúsculas y espacios colapsados: dos nombres que solo difieren en eso son el mismo."""
-    return re.sub(r"\s+", " ", str(name)).strip().upper()
-
-
-def deduplicate(df: pd.DataFrame) -> pd.DataFrame:
-    """Una fila por nombre normalizado, conservando el id menor.
-
-    Se hace ANTES de muestrear: así un mismo texto nunca queda en train y test a la vez.
-    """
-    out = df[["id", "nombre"]].assign(nombre=df["nombre"].map(normalize_name))
-    out = out[out["nombre"] != ""]
-    out = out.sort_values("id").drop_duplicates("nombre", keep="first")
-    return out.reset_index(drop=True)
-
-
-def load_catalog(path: Path) -> pd.DataFrame:
-    """Lee el export crudo del ERP y devuelve los productos activos deduplicados (id, nombre)."""
-    df = pd.read_csv(path, usecols=["id", "nombre", "is_active"], dtype={"nombre": str})
-    df = df[df["is_active"] == "t"]
-    return deduplicate(df)
-
-
-# Verificación con los datos publicados: los 1 000 etiquetados + los 9 777 restantes son el
-# catálogo deduplicado completo.
-publicado = pd.concat(
-    [df[["id", "nombre"]], pd.read_csv(ROOT / "data/processed/catalogo_sin_etiquetar.csv")[["id", "nombre"]]]
-).sort_values("id").reset_index(drop=True)
-print(f"Productos únicos publicados: {len(publicado)}")
-print(f"Nombres repetidos: {publicado['nombre'].duplicated().sum()} · "
-      f"nombres sin normalizar: {(publicado['nombre'].map(normalize_name) != publicado['nombre']).sum()}")
-if RAW.exists():
-    print(f"Desde el export del ERP: {len(load_catalog(RAW))} productos únicos")
-
-# %% [markdown]
-# ### A.3 Muestra para etiquetar
-#
-# Muestra aleatoria simple de 1 000 productos con la semilla 42. La verificación de abajo
-# **reconstruye la muestra** a partir de los datos publicados y comprueba que salen
-# exactamente los mismos 1 000 productos que están etiquetados: el muestreo es
-# reproducible.
-
-# %%
-# Prompt (IA): «Escribe la función de muestreo aleatorio reproducible y comprueba que, aplicada
-# al catálogo deduplicado publicado, devuelve exactamente los 1 000 productos etiquetados.»
-def sample_for_labeling(df: pd.DataFrame, n: int = 1000, seed: int = SEED) -> pd.DataFrame:
-    """Muestra aleatoria simple y reproducible para etiquetar."""
-    if n > len(df):
-        raise ValueError(f"Se pidieron {n} productos pero el catálogo tiene {len(df)}")
-    return df.sample(n=n, random_state=seed).reset_index(drop=True)
-
-
-muestra = sample_for_labeling(publicado, n=1000)
-print(f"La muestra reconstruida coincide con los 1 000 etiquetados: {set(muestra['id']) == set(df['id'])}")
-
-# %% [markdown]
-# ### A.4 Etiquetado asistido
-#
-# 1. Un LLM propuso una categoría por producto con el prompt de la sección 2.
-# 2. `write_review_workbook` arma una planilla Excel ordenada por la propuesta, con la
-#    columna `final` prellenada y un desplegable cerrado con las categorías válidas. Los
-#    nombres se escriben como texto (un nombre que empiece con «=» se interpretaría como
-#    fórmula).
-# 3. El autor revisó las 1 000 filas en la planilla.
-# 4. `check_review_matches_sample` comprueba que solo se editó la columna `final` (ni ids
-#    ni nombres), y `build_labeled_dataset` valida que no haya celdas vacías ni categorías
-#    fuera de la taxonomía, excluye «No sé» y fusiona en «Otros» las clases con menos de 30
-#    ejemplos.
-#
-# La planilla está en `data/interim/` y no se publica; la celda la procesa solo si existe.
-# Lo que sí se verifica abajo es que el dataset publicado cumple las reglas.
-
-# %%
-# Prompt (IA): «Escribe la taxonomía, la planilla de revisión con desplegable cerrado y nombres
-# forzados a texto, su lectura, y la construcción del dataset que valida la revisión, excluye
-# "No sé" y fusiona en "Otros" las clases con menos de 30 ejemplos; verifica las reglas
-# sobre el dataset publicado.»
-from openpyxl import Workbook, load_workbook
-from openpyxl.worksheet.datavalidation import DataValidation
-
-NO_SE = "No sé"
-OTROS = "Otros"
-CATEGORIES: list[str] = [
-    "Uñas",
-    "Cuidado capilar",
-    "Coloración capilar",
-    "Maquillaje",
-    "Pestañas y cejas",
-    "Piel y cuerpo",
-    "Herramientas y equipos de cabello",
-    "Extensiones y accesorios de cabello",
-    OTROS,
-]
-COLUMNS = ["id", "nombre", "propuesta", "final"]
-MIN_STRATIFIED = 13  # tras el 80/20 quedan ≥ 10 por clase en train: lo que pide la CV de 10 folds
-
-
-def write_review_workbook(df: pd.DataFrame, categories: list[str], path: Path) -> None:
-    """Excel ordenado por propuesta, con `final` prellenado y desplegable cerrado."""
-    rows = df.sort_values(["propuesta", "nombre"])
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "revision"
-    ws.append(COLUMNS)
-    for r in rows.itertuples(index=False):
-        ws.append([r.id, r.nombre, r.propuesta, r.propuesta])
-        # Un nombre que empieza con "=" se guardaría como fórmula: se fuerza texto.
-        ws.cell(row=ws.max_row, column=2).data_type = "s"
-    opciones = ",".join([*categories, NO_SE])
-    dv = DataValidation(type="list", formula1=f'"{opciones}"', allow_blank=False)
-    dv.error = "Elige una categoría de la lista"
-    ws.add_data_validation(dv)
-    dv.add(f"D2:D{len(rows) + 1}")
-    ws.column_dimensions["B"].width = 70
-    ws.column_dimensions["C"].width = 18
-    ws.column_dimensions["D"].width = 18
-    ws.freeze_panes = "A2"
-    wb.save(path)
-
-
-def read_review_workbook(path: Path) -> pd.DataFrame:
-    ws = load_workbook(path, read_only=True).active
-    values = list(ws.values)
-    return pd.DataFrame(values[1:], columns=list(values[0]))[COLUMNS]
-
-
-def build_labeled_dataset(
-    review: pd.DataFrame, categories: list[str], min_count: int = 30
-) -> tuple[pd.DataFrame, dict]:
-    """Valida la revisión, excluye «No sé», fusiona clases chicas en «Otros»."""
-    vacias = review.loc[review["final"].isna() | (review["final"].astype(str).str.strip() == ""), "id"]
-    if len(vacias):
-        raise ValueError(f"Revisión incompleta: celdas `final` vacías en ids {vacias.tolist()}")
-    validas = set(categories) | {NO_SE}
-    fuera = sorted(set(review["final"]) - validas)
-    if fuera:
-        raise ValueError(f"Etiquetas fuera de la taxonomía: {fuera}")
-
-    no_se = review["final"] == NO_SE
-    df = review[~no_se].copy()
-    corregidos = int((df["final"] != df["propuesta"]).sum())
-
-    counts = df["final"].value_counts()
-    chicas = sorted(c for c, n in counts.items() if n < min_count and c != OTROS)
-    df["etiqueta"] = df["final"].where(~df["final"].isin(chicas), OTROS)
-
-    final_counts = df["etiqueta"].value_counts()
-    insuficientes = final_counts[final_counts < MIN_STRATIFIED]
-    if len(insuficientes):
-        raise ValueError(
-            f"Clases con menos de {MIN_STRATIFIED} ejemplos tras fusionar: {insuficientes.to_dict()}"
-        )
-
-    resumen = {
-        "revisados": int(len(review)),
-        "excluidos_no_se": int(no_se.sum()),
-        "etiquetados": int(len(df)),
-        "corregidos": corregidos,
-        "pct_corregidos": round(100 * corregidos / len(df), 2),
-        "fusionadas_en_otros": chicas,
-        "distribucion": {k: int(v) for k, v in final_counts.items()},
-    }
-    out = df[["id", "nombre", "etiqueta"]].sort_values("id").reset_index(drop=True)
-    return out, resumen
-
-
-def check_review_matches_sample(review: pd.DataFrame, muestra: pd.DataFrame) -> None:
-    """El Excel solo se edita en `final`: ids y nombres deben ser los de la muestra."""
-    if set(review["id"]) != set(muestra["id"]):
-        raise ValueError(
-            f"Los ids del Excel no coinciden con la muestra: {sorted(set(review['id']) ^ set(muestra['id']))}"
-        )
-    merged = review.merge(muestra, on="id", suffixes=("_excel", "_muestra"))
-    editados = merged.loc[merged["nombre_excel"] != merged["nombre_muestra"], "id"]
-    if len(editados):
-        raise ValueError(f"Nombres editados en el Excel (ids {editados.tolist()}): solo se edita `final`")
-
-
-REVISION = ROOT / "data/interim/revision.xlsx"  # planilla revisada: no se publica
-if REVISION.exists():
-    revision = read_review_workbook(REVISION)
-    check_review_matches_sample(revision, muestra)
-    reconstruido, _ = build_labeled_dataset(revision, CATEGORIES)
-    print(f"Dataset reconstruido desde la planilla idéntico al publicado: {reconstruido.equals(df)}")
-
-# Verificación de las reglas sobre el dataset publicado.
-conteo = df["etiqueta"].value_counts()
-print(f"Etiquetas dentro de la taxonomía: {set(conteo.index) <= set(CATEGORIES)}")
-print(f"Clase más chica: {conteo.idxmin()} con {conteo.min()} ejemplos (mínimo exigido: 30)")
-print(f"«Extensiones y accesorios de cabello» fusionada en «Otros»: "
-      f"{'Extensiones y accesorios de cabello' not in conteo.index}")
-
-# %% [markdown]
-# ### A.5 Catálogo sin etiquetar
-#
-# Para la aplicación de la sección 10: el catálogo deduplicado sin los 1 000 etiquetados,
-# con la categoría que cada producto tiene hoy en el ERP (solo para validar, nunca como
-# feature).
-
-# %%
-# Prompt (IA): «Escribe la función que arma el catálogo sin etiquetar con la categoría actual
-# del ERP y verifica que no se solapa con el dataset etiquetado.»
-def unlabeled_catalog(path: Path, labeled: pd.DataFrame) -> pd.DataFrame:
-    """Catálogo deduplicado sin los productos etiquetados, con la categoría actual del ERP.
-
-    La categoría del ERP no es feature: sirve para validar las predicciones contra lo
-    que el personal de la tienda ya había categorizado.
-    """
-    catalog = load_catalog(path)
-    erp = pd.read_csv(path, usecols=["id", "categoria"]).rename(columns={"categoria": "categoria_erp"})
-    out = catalog[~catalog["id"].isin(labeled["id"])].merge(erp, on="id", how="left")
-    return out.reset_index(drop=True)
-
-
-sin_etiquetar = pd.read_csv(ROOT / "data/processed/catalogo_sin_etiquetar.csv")
-print(f"Catálogo sin etiquetar: {len(sin_etiquetar)} productos · "
-      f"solapados con los etiquetados: {sin_etiquetar['id'].isin(df['id']).sum()}")
-if RAW.exists():
-    print(f"Reconstruido desde el ERP idéntico al publicado: {unlabeled_catalog(RAW, df).equals(sin_etiquetar)}")
-
-# %% [markdown]
-# ### A.6 Recorte de Word2Vec
-#
-# Los vectores del *Spanish Billion Words Corpus* [1] pesan 1,1 GB. Se descarga el archivo,
-# se verifica su huella SHA-256 (si el servidor lo cambiara, se detecta), se carga con
-# gensim [13] y se guardan solo las palabras del catálogo (probando minúscula, Capitalizada
-# y MAYÚSCULA). Resultado: 4 263 vectores en 4,5 MB. Para repetirlo, poner
-# `RECORTAR_W2V = True` (descarga 1,1 GB e instala gensim).
-
-# %%
-# Prompt (IA): «Recorta el Word2Vec del Spanish Billion Words Corpus al vocabulario del
-# catálogo verificando el SHA-256 de la descarga; desactivado por defecto porque descarga
-# 1,1 GB. Verifica el archivo recortado publicado.»
-RECORTAR_W2V = False
-W2V_URL = "https://cs.famaf.unc.edu.ar/~ccardellino/SBWCE/SBW-vectors-300-min5.bin.gz"
-W2V_SHA256 = "fdf2148fc697b478e61d0d3d90714bd6a97aaa54d95e048b2e9393793f4792b9"
-
-if RECORTAR_W2V:
-    import hashlib
-    import subprocess
-    import urllib.request
-
-    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "gensim"], check=True)
-    from gensim.models import KeyedVectors
-
-    w2v_raw = ROOT / "data/raw/SBW-vectors-300-min5.bin.gz"
-    w2v_raw.parent.mkdir(parents=True, exist_ok=True)
-    if not w2v_raw.exists():
-        urllib.request.urlretrieve(W2V_URL, w2v_raw)
-    digest = hashlib.sha256()
-    with w2v_raw.open("rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            digest.update(chunk)
-    if digest.hexdigest() != W2V_SHA256:
-        raise ValueError(f"SHA-256 inesperado para {w2v_raw.name}: {digest.hexdigest()}")
-    kv = KeyedVectors.load_word2vec_format(str(w2v_raw), binary=True)
-    vocab = sorted({t for name in publicado["nombre"] for t in tokenize(name)})
-    palabras_w2v, vectores_w2v = [], []
-    for w in vocab:
-        for variant in (w, w.capitalize(), w.upper()):
-            if variant in kv.key_to_index:
-                palabras_w2v.append(w)
-                vectores_w2v.append(kv[variant])
-                break
-    np.savez_compressed(W2V, words=np.array(palabras_w2v), vectors=np.array(vectores_w2v, dtype=np.float32))
-
-recortado = np.load(W2V)
-print(f"Word2Vec recortado: {len(recortado['words'])} palabras × {recortado['vectors'].shape[1]} dimensiones")
 
 # %% [markdown]
 # ## 12. Referencias
