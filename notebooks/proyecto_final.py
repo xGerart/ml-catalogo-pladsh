@@ -475,21 +475,12 @@ cov
 # anticipa la principal debilidad de la técnica 2.
 
 # %% [markdown]
-# ## 5. Feature selection
+# ## 5. Separación de los datos y feature selection
 #
-# Se usa **χ² (tipo filtro)** sobre TF-IDF: puntúa cada n-grama según su dependencia
-# con la clase, sin entrenar un modelo, y se quedan los *k* mejores. *k* entra a la
-# grilla de hiperparámetros, así que la selección se optimiza con la misma validación
-# cruzada. **No se aplica a Word2Vec**: χ² exige features no negativas y los promedios de
-# Word2Vec toman valores negativos; además, la representación preentrenada ya es densa y
-# de baja dimensión (300), como admite la rúbrica para transfer learning.
-
-# %% [markdown]
-# ## 6. Separación de los datos y pipelines
-#
-# **Split.** 80 % entrenamiento (800) / 20 % test (200), estratificado. El test **no se
-# toca** hasta la sección 8: toda decisión (hiperparámetros, comparación) se toma con
-# validación cruzada sobre el 80 %.
+# **Split.** 80 % entrenamiento (800) / 20 % test (200), estratificado. Va aquí porque la
+# selección de features es el primer paso que **usa las etiquetas**: desde este punto todo
+# se calcula solo con el entrenamiento. El test **no se toca** hasta la sección 8: toda
+# decisión (hiperparámetros, comparación) se toma con validación cruzada sobre el 80 %.
 
 # %%
 # Prompt (IA): «Separa 80/20 estratificado con semilla fija; el test no se toca hasta el final.»
@@ -499,7 +490,66 @@ X_train, X_test, y_train, y_test = train_test_split(
 len(X_train), len(X_test)
 
 # %% [markdown]
-# **Pipelines.** Cada técnica es un `Pipeline` de sklearn [3], [18]: la extracción de features se ajusta **dentro
+# **Feature selection con χ² (tipo filtro).** χ² puntúa cada n-grama según su dependencia
+# con la clase, sin entrenar un modelo, y se quedan los *k* mejores. En el modelo, χ² va
+# **dentro del pipeline** y *k* entra a la grilla de hiperparámetros (sección 7), así que la
+# selección se ajusta en cada fold y se optimiza con la misma validación cruzada. La celda
+# siguiente lo muestra sobre el entrenamiento completo, solo para ver qué puntúa χ² y cómo
+# se reparten los puntajes. **No se aplica a Word2Vec**: χ² exige features no negativas y
+# los promedios de Word2Vec toman valores negativos; además, la representación
+# preentrenada ya es densa y de baja dimensión (300), como admite la rúbrica para
+# transfer learning.
+
+# %%
+# Prompt (IA): «Muestra la selección χ² sobre el entrenamiento: los n-gramas con mayor puntaje y la
+# clase con la que más se asocian, y un gráfico de los puntajes ordenados con los k de la grilla.»
+tfidf_demo = TfidfVectorizer(analyzer="char_wb", ngram_range=(2, 5), sublinear_tf=True, min_df=2)
+X_demo = tfidf_demo.fit_transform(X_train)
+chi2_scores, _ = chi2(X_demo, y_train)
+ngramas = tfidf_demo.get_feature_names_out()
+# Clase asociada a cada n-grama: la de mayor TF-IDF promedio entre sus productos.
+clases_demo = np.sort(y_train.unique())
+Y = label_binarize(y_train, classes=clases_demo)
+medias = np.asarray((X_demo.T @ Y).T) / Y.sum(axis=0)[:, None]
+orden = np.argsort(chi2_scores)[::-1]
+acumulado = np.cumsum(chi2_scores[orden]) / chi2_scores.sum()
+print(f"{X_demo.shape[1]} n-gramas en el entrenamiento")
+for k in [250, 1000, 3500]:
+    print(f"  los {k} mejores concentran el {100 * acumulado[k - 1]:.0f} % del puntaje χ² total")
+
+fig, ax = plt.subplots(figsize=(10, 4.2), layout="constrained")
+ax.plot(np.arange(1, len(orden) + 1), chi2_scores[orden])
+ax.set_xscale("log")
+ax.set_yscale("log")
+for k in [250, 500, 1000, 2000, 3500, len(orden)]:
+    ax.axvline(k, ls="--", c="grey", lw=0.8)
+    ax.text(k, ax.get_ylim()[1], f" k={k}" if k < len(orden) else " all", fontsize=8, va="top")
+ax.set_xlabel("posición del n-grama ordenado por puntaje χ² (escala log)")
+ax.set_ylabel("puntaje χ² (escala log)")
+ax.set_title("Puntaje χ² de cada n-grama, con los k de la grilla")
+fig.savefig(FIG / "chi2.png", bbox_inches="tight")
+plt.show()
+
+pd.DataFrame({
+    "n-grama": [repr(ngramas[i]) for i in orden[:15]],
+    "χ²": chi2_scores[orden[:15]].round(1),
+    "clase asociada": [clases_demo[medias[:, i].argmax()] for i in orden[:15]],
+})
+
+# %% [markdown]
+# **Lectura de χ².** Los n-gramas con mayor puntaje son fragmentos de palabras que
+# definen una clase («tint», « pes», «taña»): χ² encuentra lo esperado. Pasados los ~40
+# más distintivos, el puntaje cae de forma **gradual**, sin un codo claro en el rango de la
+# grilla: la información está repartida entre miles de n-gramas (los 250 mejores
+# concentran el 18 % del puntaje total; los 1 000 mejores, el 42 %). Por eso no se fija *k* a ojo: se deja como hiperparámetro, con la opción `all`
+# (sin selección). En la sección 7 la validación cruzada elige `all`: con este volumen de
+# features, la regularización L2 de la regresión logística ya controla las features poco
+# informativas y descartarlas no mejora el F1.
+
+# %% [markdown]
+# ## 6. Pipelines
+#
+# Cada técnica es un `Pipeline` de sklearn [3], [18]: la extracción de features se ajusta **dentro
 # de cada fold** de la validación cruzada. Si TF-IDF o χ² se ajustaran con todos los
 # datos antes de la CV, verían los folds de validación (data leakage).
 
@@ -537,7 +587,8 @@ display(pipe_tfidf, pipe_w2v)
 
 # %%
 # Prompt (IA): «Optimiza ambos pipelines con GridSearchCV y RepeatedStratifiedKFold
-# 5×3, scoring f1_macro; para LogReg grilla de C en escala log, k de chi2 y ngram_range.»
+# 5×3, scoring f1_macro; para LogReg grilla de C en escala log, k de chi2 y ngram_range.
+# Muestra en tablas la mejor combinación de cada técnica y las 5 mejores de cada grilla.»
 cv_tune = RepeatedStratifiedKFold(n_splits=5, n_repeats=3, random_state=SEED)
 grid_tfidf = {
     "tfidf__ngram_range": [(2, 4), (2, 5)],
@@ -553,7 +604,48 @@ search_tfidf = GridSearchCV(
 search_w2v = GridSearchCV(
     pipe_w2v, grid_w2v, cv=cv_tune, scoring="f1_macro", n_jobs=-1, return_train_score=True
 ).fit(X_train, y_train)
-search_tfidf.best_params_, search_tfidf.best_score_, search_w2v.best_params_, search_w2v.best_score_
+
+
+def resumen_busqueda(search, nombre):
+    """Mejor combinación de una búsqueda: hiperparámetros y F1 de validación y de entrenamiento."""
+    r, i = search.cv_results_, search.best_index_
+    return {
+        "técnica": nombre,
+        "mejores hiperparámetros": ", ".join(f"{k.split('__')[1]}={v:.4g}" if isinstance(v, float) else f"{k.split('__')[1]}={v}"
+                                             for k, v in search.best_params_.items()),
+        "combinaciones": len(r["params"]),
+        "F1-macro validación": f"{r['mean_test_score'][i]:.3f} ± {r['std_test_score'][i]:.3f}",
+        "F1-macro entrenamiento": f"{r['mean_train_score'][i]:.3f}",
+    }
+
+
+def mejores_combinaciones(search, n=5):
+    """Las n mejores combinaciones de la grilla, ordenadas por F1 de validación."""
+    r = pd.DataFrame(search.cv_results_).sort_values("rank_test_score").head(n)
+    params = r.filter(like="param_").rename(columns=lambda c: c.split("__")[1])
+    if "C" in params:
+        params.insert(0, "λ = 1/C", (1 / params["C"].astype(float)).map("{:.4g}".format))
+        params["C"] = params["C"].astype(float).map("{:.4g}".format)
+    return params.assign(
+        **{"F1 validación": r["mean_test_score"].round(4), "± std": r["std_test_score"].round(4),
+           "F1 entrenamiento": r["mean_train_score"].round(4)}
+    ).reset_index(drop=True)
+
+
+display(pd.DataFrame([resumen_busqueda(search_tfidf, "TF-IDF + LogReg"), resumen_busqueda(search_w2v, "Word2Vec + SVM")]))
+print("TF-IDF + LogReg — 5 mejores combinaciones")
+display(mejores_combinaciones(search_tfidf))
+print("Word2Vec + SVM — 5 mejores combinaciones")
+display(mejores_combinaciones(search_w2v))
+
+# %% [markdown]
+# **Resultado de la grilla.** TF-IDF + LogReg: mejor F1-macro de validación **0,739 ± 0,045**
+# con n-gramas 2–5, sin selección (`k = all`) y C ≈ 464 (λ ≈ 0,002), entre 120
+# combinaciones. Word2Vec + SVM: **0,640 ± 0,037** con C ≈ 7,2 y γ = 10⁻³, entre 24. En
+# ambas técnicas las 5 mejores combinaciones quedan a menos de 0,01 entre sí, bastante
+# menos que la desviación entre folds (≈ 0,04): el óptimo es una **meseta**, no un punto
+# frágil. El F1 de entrenamiento (1,000 y 0,977) muy por encima del de validación es la
+# brecha de sobreajuste que muestran las gráficas siguientes.
 
 # %% [markdown]
 # **Funciones de gráfico de la optimización.** `plot_param_curve` toma los resultados de
@@ -767,18 +859,22 @@ def guardar(ax, titulo, archivo, ylabel=None, xlabel=None):
     plt.show()
 
 
-for estudio, nombre, archivo in [(estudio_tfidf, "TF-IDF + LogReg", "optuna_historial_tfidf.png"),
-                                 (estudio_w2v, "Word2Vec + SVM", "optuna_historial_w2v.png")]:
-    ax = ov.plot_optimization_history(estudio)
-    ax.legend(["F1-macro de cada intento", "mejor hasta ese intento"], fontsize=8)
-    guardar(ax, f"Optuna · {nombre}: historial", archivo, ylabel="F1-macro (CV 5 × 3)", xlabel="intento")
-# Evaluador fijado explícitamente (es el default de Optuna 5) para que no cambie con la versión.
-ax = ov.plot_param_importances(estudio_tfidf, evaluator=optuna.importance.PedAnovaImportanceEvaluator())
-ax.get_legend().remove()
-guardar(ax, "Optuna · TF-IDF + LogReg: importancia de hiperparámetros", "optuna_importancia_tfidf.png",
-        xlabel="importancia (PED-ANOVA)", ylabel="hiperparámetro")
-ax = ov.plot_contour(estudio_w2v, params=["gamma", "lambda"])
-guardar(ax, "Optuna · Word2Vec + SVM: F1-macro según λ y γ", "optuna_contorno_w2v.png", ylabel="λ = 1/C", xlabel="γ")
+# Los gráficos de Optuna activan el estilo «ggplot» de matplotlib para TODO el notebook, y su
+# paleta tiene solo 7 colores: con 8 clases, dos categorías saldrían del mismo color en los
+# gráficos siguientes. style.context deja ese estilo solo dentro de este bloque.
+with plt.style.context("ggplot"):
+    for estudio, nombre, archivo in [(estudio_tfidf, "TF-IDF + LogReg", "optuna_historial_tfidf.png"),
+                                     (estudio_w2v, "Word2Vec + SVM", "optuna_historial_w2v.png")]:
+        ax = ov.plot_optimization_history(estudio)
+        ax.legend(["F1-macro de cada intento", "mejor hasta ese intento"], fontsize=8)
+        guardar(ax, f"Optuna · {nombre}: historial", archivo, ylabel="F1-macro (CV 5 × 3)", xlabel="intento")
+    # Evaluador fijado explícitamente (es el default de Optuna 5) para que no cambie con la versión.
+    ax = ov.plot_param_importances(estudio_tfidf, evaluator=optuna.importance.PedAnovaImportanceEvaluator())
+    ax.get_legend().remove()
+    guardar(ax, "Optuna · TF-IDF + LogReg: importancia de hiperparámetros", "optuna_importancia_tfidf.png",
+            xlabel="importancia (PED-ANOVA)", ylabel="hiperparámetro")
+    ax = ov.plot_contour(estudio_w2v, params=["gamma", "lambda"])
+    guardar(ax, "Optuna · Word2Vec + SVM: F1-macro según λ y γ", "optuna_contorno_w2v.png", ylabel="λ = 1/C", xlabel="γ")
 
 # %% [markdown]
 # **Lectura de Optuna.**
